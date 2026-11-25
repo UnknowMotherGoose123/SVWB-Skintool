@@ -76,6 +76,37 @@ CATEGORIES = [
     ('other', '其他', re.compile(r'.')),
 ]
 
+# 可以单独选择是否替换的“部分”：资源类别 + 字幕与名字（主数据）
+PART_KEYS = [k for k, _, _ in CATEGORIES] + ['subtitle']
+
+
+def norm_parts(parts):
+    """None / 全选 → None（全部替换）；否则排好序的元组（只保留认识的部分）。"""
+    if parts is None:
+        return None
+    sel = {str(x) for x in parts} & set(PART_KEYS)
+    return None if sel == set(PART_KEYS) else tuple(sorted(sel))
+
+
+def wants(parts, key):
+    return parts is None or key in parts
+
+
+def swap_list(swaps):
+    """[(A, B) 或 (A, B, parts)] → [(A, B, parts)]，去掉 A==B。"""
+    out = []
+    for s in swaps:
+        a, b = str(s[0]), str(s[1])
+        if a != b:
+            out.append((a, b, norm_parts(s[2] if len(s) > 2 else None)))
+    return out
+
+
+def swap_record(a, b, parts):
+    """写进配置/状态文件的形式：全部替换时仍是 [A, B]（兼容旧版）。"""
+    return [a, b] if parts is None else [a, b, list(parts)]
+
+
 # 界面用图片：kind -> [(资源名模板, 最大尺寸或 None)]，按顺序找第一个存在的
 IMAGE_KINDS = {
     'thumb': [('UI/LeaderSkinThumbnail/utx_base_leaderskin_thumbnail_{id}', (342, 370)),
@@ -728,8 +759,8 @@ class SkinSwapper:
     # ------------------------------------------------------------ apply
     @staticmethod
     def _norm_swaps(swaps):
-        swaps = [(str(a), str(b)) for a, b in swaps if str(a) != str(b)]
-        targets = [a for a, _ in swaps]
+        swaps = swap_list(swaps)
+        targets = [a for a, _, _ in swaps]
         if len(set(targets)) != len(targets):
             raise ValueError('同一个目标皮肤只能设置一个来源')
         return swaps
@@ -796,7 +827,7 @@ class SkinSwapper:
                 os.replace(tmp, p)
                 written[h] = {'name': name, 'new': sha1(enc)}
         finally:
-            self.state = {'engine': 'inplace', 'files': written, 'applied': [list(s) for s in swaps],
+            self.state = {'engine': 'inplace', 'files': written, 'applied': [swap_record(*s) for s in swaps],
                           'time': time.time()}
             self._save_state()
         stats['changed'] = sum(1 for v in written.values() if v['name'] != MASTER_NAME)
@@ -812,11 +843,18 @@ class SkinSwapper:
     def _compute(self, swaps, rows, stats, progress=None, cancel=None):
         """生成每一项要写入的内容（不碰游戏文件，结果进缓存）。返回 (plan, {k: (明文, 日志, 统计)}, total)。"""
         plan, orphans = [], {}
-        for a, b in swaps:
+        for a, b, parts in swaps:
             for nb in sorted(n for n in rows if is_skin_asset(n, b)):
                 na = rep(nb, b, a)
                 if BASE_ID_ASSET.search(nb):
-                    stats['native'] = stats.get('native', 0) + 1     # 进化特效按 BaseSkinId 直接加载来源皮肤的原生资源
+                    if wants(parts, 'evolve'):
+                        stats['native'] = stats.get('native', 0) + 1     # 进化特效按 BaseSkinId 直接加载来源皮肤的原生资源
+                    continue
+                if not wants(parts, categorize(nb)):
+                    if na in rows:
+                        stats['excluded'] = stats.get('excluded', 0) + 1   # 用户选择不替换这一部分
+                    else:
+                        orphans.setdefault(a, []).append(nb)
                     continue
                 if na not in rows:
                     stats['no_target'] = stats.get('no_target', 0) + 1
@@ -1075,7 +1113,9 @@ class SkinSwapper:
         lab = mm.table('MasterTextLabel')
         d = {r[0]: r for r in lab}
         n = 0
-        for a, b in swaps:
+        for a, b, parts in swaps:
+            if not wants(parts, 'subtitle'):
+                continue
             pat = re.compile(LABEL_PATTERN.replace('{id}', re.escape(b)))
             for key, r in list(d.items()):
                 if pat.match(key):
@@ -1094,7 +1134,9 @@ class SkinSwapper:
         lsm = mm.table('LeaderSkinMaster')
         by = {str(r[0]): r for r in lsm}
         n_evo = 0
-        for a, b in swaps:
+        for a, b, parts in swaps:
+            if not wants(parts, 'evolve'):
+                continue
             ra, rb = by.get(a), by.get(b)
             if not ra or not rb or len(ra) < 10 or len(rb) < 10:
                 continue
@@ -1114,7 +1156,9 @@ class SkinSwapper:
             rows = mm.table(table)
             by = {str(r[0]): r for r in rows}
             changed = False
-            for a, b in swaps:
+            for a, b, parts in swaps:
+                if not wants(parts, 'portrait'):
+                    continue                  # 摆放参数跟着立绘走：不换立绘就保持原样
                 rb = by.get(b)
                 if rb is not None:
                     new = list(rb)
@@ -1189,8 +1233,9 @@ class SkinSwapper:
     # ------------------------------------------------------------ rescan check
     def needs_update(self, swaps):
         """返回 (是否需要更新, 原因)。"""
-        swaps = sorted([str(a), str(b)] for a, b in swaps)
-        if swaps != sorted(self.state.get('applied', [])):
+        want = sorted(swap_list(swaps), key=repr)
+        have = sorted(swap_list(self.state.get('applied', [])), key=repr)
+        if want != have:
             return True, '替换方案有变化'
         for h, rec in self.state.get('files', {}).items():
             p = self._path(h)

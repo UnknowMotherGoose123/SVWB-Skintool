@@ -36,6 +36,7 @@ const S = {
   previewKey: '',
   previewSeq: 0,
   openCat: null,
+  off: new Set(),        // 预览里取消勾选（不替换）的部分
   logSeq: 0,
   logs: [],
   unread: 0,
@@ -110,6 +111,7 @@ function onState(st) {
   S.state = st;
 
   $('#demoBadge').hidden = !st.app.demo;
+  renderVersion(st);
   renderDir(st);
   renderBanners(st);
   const auto = $('#autoRescan');
@@ -413,10 +415,42 @@ async function loadPreview() {
     if (seq !== S.previewSeq) return;
     S.preview = p;
     S.openCat = null;
+    S.off = initialOff(p);
     renderPreview();
   } catch (e) {
     if (seq === S.previewSeq) { $('#previewLoading').hidden = true; S.previewKey = ''; fail(e); }
   }
+}
+
+/* 选择替换哪些部分：S.off = 取消勾选的类别 key（默认全选） */
+function allParts() { return (S.state && S.state.parts) || []; }
+function planEntry(target) { return S.state ? S.state.plan.find((x) => x.target === target) : null; }
+function offFromParts(parts) {
+  if (!parts) return new Set();
+  return new Set(allParts().filter((k) => !parts.includes(k)));
+}
+function initialOff(p) {
+  const e = planEntry(p.target);
+  return e && e.source === p.source ? offFromParts(e.parts) : new Set();
+}
+function selectedParts(p) {
+  // 只把预览里出现的类别算作“取消勾选”；全选时返回 null（= 全部替换）
+  const off = [...S.off].filter((k) => p.categories.some((c) => c.key === k));
+  if (!off.length) return null;
+  return allParts().filter((k) => !off.includes(k));
+}
+function sameParts(x, y) {
+  const norm = (v) => (v ? [...v].sort() : null);
+  return JSON.stringify(norm(x)) === JSON.stringify(norm(y));
+}
+function partsSummary(parts) {
+  if (!parts) return '';
+  const names = { model: '模型', vs: '对战立绘', evolve: '进化演出', evo_point: '进化点插图', battle_ui: '战斗界面',
+    portrait: '头像与卡组', voice: '语音', sfx: '音效', other: '其他', subtitle: '字幕与名字' };
+  const off = allParts().filter((k) => !parts.includes(k));
+  if (!parts.length) return '一项都不换';
+  return parts.length <= off.length ? '只换' + parts.map((k) => names[k] || k).join('、')
+    : '不换' + off.map((k) => names[k] || k).join('、');
 }
 
 function renderPreview() {
@@ -425,7 +459,9 @@ function renderPreview() {
   const A = S.byId.get(p.target), B = S.byId.get(p.source);
   $('#previewLoading').hidden = true;
   $('#preview').hidden = false;
-  $('#previewTotal').innerHTML = `共 <b>${p.total}</b> 项会被替换${p.missing ? `<span style="color:var(--text3)"> · ${p.missing} 项无对应位置</span>` : ''}`;
+  const chosen = p.categories.filter((c) => !S.off.has(c.key)).reduce((n, c) => n + c.count, 0);
+  const offN = p.categories.filter((c) => S.off.has(c.key)).length;
+  $('#previewTotal').innerHTML = `共 <b>${chosen}</b> 项会被替换${offN ? `<span style="color:var(--text3)"> · ${offN} 部分不换</span>` : ''}${p.missing ? `<span style="color:var(--text3)"> · ${p.missing} 项无对应位置</span>` : ''}`;
 
   // 进化点插图对比
   const evo = $('#evoCompare');
@@ -440,8 +476,14 @@ function renderPreview() {
   }
 
   const cats = $('#cats');
-  cats.innerHTML = p.categories.map((c) =>
-    `<button type="button" class="cat${S.openCat === c.key ? ' on' : ''}" data-key="${c.key}">${esc(c.label)} <b>${c.count}</b>${c.missing ? `<span class="miss">+${c.missing}</span>` : ''}</button>`).join('');
+  const allOn = p.categories.every((c) => !S.off.has(c.key));
+  cats.innerHTML = `<div class="cats-head"><span>要替换的部分</span><button type="button" class="cats-all" data-all="${allOn ? 0 : 1}">${allOn ? '全不选' : '全选'}</button></div>`
+    + p.categories.map((c) => {
+      const off = S.off.has(c.key);
+      return `<span class="cat${S.openCat === c.key ? ' on' : ''}${off ? ' off' : ''}" data-key="${c.key}">`
+        + `<button type="button" class="cat-chk" data-key="${c.key}" role="checkbox" aria-checked="${!off}" title="${off ? '点一下：替换这部分' : '点一下：不替换这部分'}"><svg class="ico"><use href="#i-check"/></svg></button>`
+        + `<button type="button" class="cat-lbl" data-key="${c.key}" title="查看包含哪些资源">${esc(c.label)} <b>${c.count}</b>${c.missing ? `<span class="miss">+${c.missing}</span>` : ''}</button></span>`;
+    }).join('');
   renderCatDetail();
 
   const keep = $('#keepNote');
@@ -456,12 +498,16 @@ function renderPreview() {
   keep.hidden = !notes.length;
   keep.innerHTML = notes.map((t, i) => `<div${i === 0 && p.evolve && p.evolve.deluxe ? ' style="color:var(--gold-hi)"' : ''}>${esc(t)}</div>`).join('');
 
-  const exists = S.state && S.state.plan.find((x) => x.target === p.target);
+  const exists = planEntry(p.target);
+  const parts = selectedParts(p);
+  const same = !!(exists && exists.source === p.source && sameParts(exists.parts, parts));
+  const none = p.categories.length > 0 && p.categories.every((c) => S.off.has(c.key));
   const btn = $('#btnAdd');
-  btn.innerHTML = exists
-    ? (exists.source === p.source ? '<svg class="ico"><use href="#i-check"/></svg>已在方案中' : '<svg class="ico"><use href="#i-swap"/></svg>更新方案中的这一组')
-    : '<svg class="ico"><use href="#i-plus"/></svg>加入替换方案';
-  btn.disabled = !!(exists && exists.source === p.source);
+  btn.innerHTML = none ? '<svg class="ico"><use href="#i-close"/></svg>至少选一个要替换的部分'
+    : same ? '<svg class="ico"><use href="#i-check"/></svg>已在方案中'
+      : exists ? '<svg class="ico"><use href="#i-swap"/></svg>更新方案中的这一组'
+        : '<svg class="ico"><use href="#i-plus"/></svg>加入替换方案';
+  btn.disabled = same || none;
 }
 
 function renderCatDetail() {
@@ -494,27 +540,33 @@ async function savePlan(plan, okMsg) {
 function addToPlan() {
   const p = S.preview;
   if (!p || !S.state) return;
-  const plan = S.state.plan.filter((x) => x.target !== p.target).concat([{ target: p.target, source: p.source }]);
+  const parts = selectedParts(p);
+  const item = { target: p.target, source: p.source };
+  if (parts) item.parts = [...parts].sort();
+  const plan = S.state.plan.filter((x) => x.target !== p.target).concat([item]);
   const A = S.byId.get(p.target), B = S.byId.get(p.source);
-  savePlan(plan, ['已加入替换方案', `「${A ? A.name : p.target}」将显示为「${B ? B.name : p.source}」。点「一键替换」生效。`]).then(renderPreview);
+  const note = parts ? `（${partsSummary(parts)}）` : '';
+  savePlan(plan, ['已加入替换方案', `「${A ? A.name : p.target}」将显示为「${B ? B.name : p.source}」${note}。点「一键替换」生效。`]).then(renderPreview);
 }
 
 function renderPlan() {
   const st = S.state;
   if (!st) return;
   const list = $('#planList');
-  const applied = new Set(st.applied.map((x) => `${x.target}>${x.source}`));
+  const sig = (x) => `${x.target}>${x.source}>${JSON.stringify(x.parts || null)}`;
+  const applied = new Set(st.applied.map(sig));
   $('#planEmpty').hidden = st.plan.length > 0;
   $('#dirtyTag').hidden = !st.dirty;
   list.innerHTML = st.plan.map((x) => {
     const A = S.byId.get(x.target), B = S.byId.get(x.source);
-    const ok = applied.has(`${x.target}>${x.source}`);
+    const ok = applied.has(sig(x));
+    const ps = partsSummary(x.parts);
     return `<div class="plan-row" data-t="${x.target}" data-s="${x.source}" tabindex="0" title="点击在上方查看这一组">
       <img class="av a" src="/img/icon/${x.target}" alt="" onerror="this.style.visibility='hidden'">
       <span class="nm">${esc(A ? A.name : x.target)}<small>#${x.target}</small></span>
       <svg class="ico to"><use href="#i-arrow"/></svg>
       <img class="av b" src="/img/icon/${x.source}" alt="" onerror="this.style.visibility='hidden'">
-      <span class="nm">${esc(B ? B.name : x.source)}<small>#${x.source}</small></span>
+      <span class="nm">${esc(B ? B.name : x.source)}<small>#${x.source}${ps ? ` · <span class="parts" title="${esc(ps)}">${esc(ps)}</span>` : ''}</small></span>
       ${ok ? '<span class="pill pill-ok"><svg class="ico"><use href="#i-check"/></svg>已生效</span>' : '<span class="pill pill-wait">待应用</span>'}
       <button class="rm" type="button" title="从方案中移除" aria-label="移除"><svg class="ico"><use href="#i-close"/></svg></button>
     </div>`;
@@ -563,6 +615,42 @@ async function doApply() {
   if (!st) return;
   if (!st.plan.length && st.applied.length) { openConfirm(); return; }
   try { onState(await api('/api/apply', {})); } catch (e) { fail(e); }
+}
+
+/* ------------------------------------------------------------------ 工具新版本 */
+function renderVersion(st) {
+  const u = st.appUpdate || {};
+  const cur = `v${st.app.version}`;
+  const chip = $('#verChip');
+  let text = cur, cls = '', title = '点一下：检查 GitHub 上有没有新版本';
+  if (u.checking) { text = `${cur} · 检查中…`; cls = 'checking'; }
+  else if (u.error) { text = `${cur} · 检查失败`; cls = 'err'; title = `检查新版本失败：${u.error}\n点一下重试`; }
+  else if (u.newer) {
+    text = `新版本 v${u.latest}`; cls = 'new';
+    title = `当前 ${cur}，GitHub 上已有 v${u.latest}。点一下打开下载页${u.notes ? '\n\n' + u.notes.slice(0, 300) : ''}`;
+  } else if (u.latest) { text = `${cur} · 已是最新`; cls = 'ok'; title = `GitHub 上是 v${u.latest}。点一下重新检查`; }
+  chip.className = 'ver-chip' + (cls ? ' ' + cls : '');
+  $('#verText').textContent = text;
+  chip.title = title;
+  // 结果提示：发现新版本只提示一次；手动检查完成时提示结果
+  if (!u.checking && u.time && u.time !== S.verSeen) {
+    const manual = S.verManual;
+    S.verSeen = u.time;
+    S.verManual = false;
+    if (u.newer) toast('warn', `发现新版本 v${u.latest}`, '点左上角的版本号打开下载页。', 8000);
+    else if (manual && u.error) toast('err', '检查新版本失败', u.error, 6500);
+    else if (manual) toast('ok', '已是最新版本', `当前 ${cur}，GitHub 上是 v${u.latest}。`);
+  }
+}
+
+async function onVersionClick() {
+  const u = (S.state && S.state.appUpdate) || {};
+  if (u.checking) return;
+  try {
+    if (u.newer) { await api('/api/open', { what: 'release' }); return; }
+    S.verManual = true;
+    onState(await api('/api/app_update', {}));
+  } catch (e) { fail(e); }
 }
 
 async function doCheck() {
@@ -732,7 +820,20 @@ function bind() {
   $('#slotA').addEventListener('click', () => setActive('a'));
   $('#slotB').addEventListener('click', () => setActive('b'));
   $('#cats').addEventListener('click', (e) => {
-    const b = e.target.closest('.cat');
+    const all = e.target.closest('.cats-all');
+    if (all && S.preview) {
+      S.off = all.dataset.all === '1' ? new Set() : new Set(S.preview.categories.map((c) => c.key));
+      renderPreview();
+      return;
+    }
+    const chk = e.target.closest('.cat-chk');
+    if (chk) {
+      const k = chk.dataset.key;
+      if (S.off.has(k)) S.off.delete(k); else S.off.add(k);
+      renderPreview();
+      return;
+    }
+    const b = e.target.closest('.cat-lbl');
     if (!b) return;
     S.openCat = S.openCat === b.dataset.key ? null : b.dataset.key;
     document.querySelectorAll('.cat').forEach((x) => x.classList.toggle('on', x.dataset.key === S.openCat));
@@ -765,6 +866,7 @@ function bind() {
   $('#confirmNo').addEventListener('click', closeConfirm);
   $('#confirmYes').addEventListener('click', doRevert);
   $('#btnCheck').addEventListener('click', doCheck);
+  $('#verChip').addEventListener('click', onVersionClick);
   $('#autoRescan').addEventListener('change', async (e) => {
     const on = e.target.checked;
     try {

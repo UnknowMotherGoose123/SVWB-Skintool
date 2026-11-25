@@ -20,11 +20,12 @@ import urllib.request
 from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from .core import SkinSwapper, detect_game_dirs, find_persistent, game_running
+from . import updates
+from .core import SkinSwapper, detect_game_dirs, find_persistent, game_running, swap_list, swap_record, PART_KEYS
 
 APP_ID = 'svwb-skinswap'
 APP_NAME = '影之诗 WB 主战者换皮'
-VERSION = '2.0.0'
+VERSION = '2.1.0'
 PREFERRED_PORT = 47321
 CLS_RANK = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 99: 8, 0: 9}
 # 显式指定 MIME，避免 Windows 注册表把 .js/.css 映射错导致页面加载失败
@@ -111,7 +112,13 @@ class Backend:
         self.last_seen = time.time()
         self.bye_at = None
         self.quit_event = threading.Event()
+        self.app_update = None      # 工具新版本检查结果
+        self.app_update_checking = False
         threading.Thread(target=self._watch_game, daemon=True).start()
+        if not demo:
+            t = threading.Timer(3.0, lambda: self.check_app_update(auto=True))
+            t.daemon = True
+            t.start()
 
     # ------------------------------------------------------------ config / log
     def _load_cfg(self):
@@ -121,7 +128,7 @@ class Backend:
                 cfg.update(json.load(fp))
         except Exception:
             pass
-        cfg['swaps'] = [[str(a), str(b)] for a, b in cfg.get('swaps', []) if str(a) != str(b)]
+        cfg['swaps'] = [swap_record(*x) for x in swap_list(cfg.get('swaps', []))]
         return cfg
 
     def _save_cfg(self):
@@ -175,9 +182,10 @@ class Backend:
                          'persist': self.sw.persist if self.sw else None,
                          'error': self.game_error, 'running': self.running},
                 'options': {'autoRescan': bool(self.cfg.get('auto_rescan', True))},
-                'plan': [{'target': a, 'source': b} for a, b in plan],
-                'applied': [{'target': a, 'source': b} for a, b in applied],
-                'dirty': sorted(map(tuple, plan)) != sorted(map(tuple, applied)),
+                'plan': [self._plan_item(x) for x in swap_list(plan)],
+                'applied': [self._plan_item(x) for x in swap_list(applied)],
+                'parts': PART_KEYS,
+                'dirty': sorted(swap_list(plan), key=repr) != sorted(swap_list(applied), key=repr),
                 'skins': {'ver': self.skins_ver, 'loading': self.loading, 'count': len(self.skins)},
                 'task': dict(self.task) if self.task else None,
                 'result': self.result,
@@ -185,7 +193,16 @@ class Backend:
                 'prewarm': dict(self.prewarm),
                 'health': dict(self.health) if self.health else None,
                 'meta': dict(self.meta_info) if self.meta_info else None,
+                'appUpdate': dict(self.app_update or {}, checking=self.app_update_checking, current=VERSION),
             }
+
+    @staticmethod
+    def _plan_item(x):
+        a, b, parts = x
+        d = {'target': a, 'source': b}
+        if parts is not None:
+            d['parts'] = list(parts)          # 只替换这些部分；没有这个字段 = 全部替换
+        return d
 
     def refresh_meta(self):
         sw = self.sw
@@ -347,8 +364,11 @@ class Backend:
             a, b = str(item.get('target', '')), str(item.get('source', ''))
             if not a or not b or a == b or a in seen:
                 continue
+            parts = item.get('parts')
+            if parts is not None and not isinstance(parts, list):
+                raise ApiError('parts 必须是列表')
             seen.add(a)
-            swaps.append([a, b])
+            swaps.append(swap_record(*swap_list([(a, b, parts)])[0]))
         with self.lock:
             self.cfg['swaps'] = swaps
             self._save_cfg()
@@ -460,7 +480,8 @@ class Backend:
         swaps = [tuple(s) for s in self.cfg.get('swaps', [])]
         if not swaps:
             return self._start_task('revert', '还原', self._do_revert)
-        self.log('开始替换：' + '，'.join(f'{self._name(a)} → {self._name(b)}' for a, b in swaps), 'info')
+        self.log('开始替换：' + '，'.join(f'{self._name(a)} → {self._name(b)}' + ('' if parts is None else f'（只替换 {len(parts)} 部分）')
+                                         for a, b, parts in swap_list(swaps)), 'info')
         return self._start_task('apply', '替换', lambda: self._do_apply(swaps))
 
     def revert(self, clear_plan=True):
@@ -528,7 +549,7 @@ class Backend:
     def _demo_apply(self, swaps):
         total = 0
         plans = []
-        for a, b in swaps:
+        for a, b, _ in swap_list(swaps):
             p = self.sw.preview(a, b)
             plans.append(p)
             total += p['total']
@@ -544,7 +565,42 @@ class Backend:
         self.log(summary, 'ok')
         return summary, {'changed': total, 'labels': 0, 'skipped': 0, 'failed': 0}
 
+    # ------------------------------------------------------------ 工具新版本
+    def check_app_update(self, auto=False):
+        """后台对比 GitHub 上的版本（启动时自动查一次；界面上点版本号可以再查）。"""
+        with self.lock:
+            if self.app_update_checking:
+                return self.state()
+            self.app_update_checking = True
+
+        def run():
+            try:
+                info = updates.check(VERSION, f'SVWBSkinSwap/{VERSION}')
+                info['time'] = time.time()
+                if info['newer']:
+                    self.log(f'发现新版本 v{info["latest"]}（当前 v{VERSION}），点左上角的版本号可以打开下载页', 'warn')
+                elif not auto:
+                    self.log(f'已是最新版本（v{VERSION}）', 'ok')
+            except Exception as ex:
+                info = {'error': str(ex), 'time': time.time()}
+                if not auto:
+                    self.log(f'检查新版本失败：{ex}', 'warn')
+            with self.lock:
+                self.app_update = info
+                self.app_update_checking = False
+
+        threading.Thread(target=run, daemon=True).start()
+        return self.state()
+
     def open_path(self, what):
+        if what == 'release':
+            # 只打开本仓库的页面（地址来自版本检查结果）
+            info = self.app_update or {}
+            url = info.get('url') or updates.RELEASES_URL
+            if not str(url).startswith(updates.REPO_URL):
+                url = updates.RELEASES_URL
+            os.startfile(url)
+            return {'ok': True}
         path = {'game': self.cfg.get('game_dir'), 'data': self.data_dir}.get(what)
         if not path or not os.path.isdir(path):
             raise ApiError('目录不存在')
@@ -682,6 +738,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(b.revert(clear_plan=body.get('clearPlan', True)))
             if path == '/api/check':
                 return self._json(b.check())
+            if path == '/api/app_update':
+                return self._json(b.check_app_update())
             if path == '/api/restore_meta':
                 return self._json(b.restore_meta())
             if path == '/api/open':

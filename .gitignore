@@ -25,3 +25,6 @@ repair_tool.py
 *.swp
 Thumbs.db
 desktop.ini
+
+# 本机预览配置
+.claude/
