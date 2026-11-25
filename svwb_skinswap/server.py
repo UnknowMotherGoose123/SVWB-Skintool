@@ -25,7 +25,7 @@ from .core import SkinSwapper, detect_game_dirs, find_persistent, game_running, 
 
 APP_ID = 'svwb-skinswap'
 APP_NAME = '影之诗 WB 主战者换皮'
-VERSION = '2.1.0'
+VERSION = '2.1.1'
 PREFERRED_PORT = 47321
 CLS_RANK = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 99: 8, 0: 9}
 # 显式指定 MIME，避免 Windows 注册表把 .js/.css 映射错导致页面加载失败
@@ -185,7 +185,8 @@ class Backend:
                 'plan': [self._plan_item(x) for x in swap_list(plan)],
                 'applied': [self._plan_item(x) for x in swap_list(applied)],
                 'parts': PART_KEYS,
-                'dirty': sorted(swap_list(plan), key=repr) != sorted(swap_list(applied), key=repr),
+                'dirty': (sorted(swap_list(plan), key=repr) != sorted(swap_list(applied), key=repr)
+                          or bool(self.sw and not self.demo and self.sw.logic_stale())),
                 'skins': {'ver': self.skins_ver, 'loading': self.loading, 'count': len(self.skins)},
                 'task': dict(self.task) if self.task else None,
                 'result': self.result,

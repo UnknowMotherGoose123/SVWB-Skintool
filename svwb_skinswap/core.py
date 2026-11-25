@@ -124,9 +124,49 @@ IMAGE_KINDS = {
 }
 
 
-# 主数据里按皮肤 ID 记录立绘摆放参数的表（练习/匹配/大奖赛/两选等界面）
+# 主数据里按皮肤 ID 记录立绘摆放参数的表：表名 -> (模式, 跟随的部分)
+#   RandomMatchLeaderSkinTransform：匹配/练习/大奖赛等界面摆放的是“对战立绘”（vs_ 图），参数跟着它走
+#   HomeIllustrationMaster：主界面看板（hi_ 预制体，归在“其他”）
 #   mirror：来源没有专门参数时，原皮肤也去掉（用默认）；copy：只在来源有参数时照抄
-TRANSFORM_TABLES = {'RandomMatchLeaderSkinTransform': 'mirror', 'HomeIllustrationMaster': 'copy'}
+TRANSFORM_TABLES = {'RandomMatchLeaderSkinTransform': ('mirror', 'vs'), 'HomeIllustrationMaster': ('copy', 'other')}
+
+# LeaderSkinMaster[6] SkinType：1=豪华进化（带专属边框） 2=只有专属边框 其它=普通。
+# 专属边框时，战斗边框/遮罩/进化点框/进化音效库都按 BaseSkinId（为 0 时用自身 ID）加载（反编译 View.dll 确认）
+SPECIAL_FRAME_TYPES = (1, 2)
+FRAME_TYPE_ONLY = 2
+FRAME_ASSET = re.compile(r'^(UI/LeaderSkinFrame/utx_base_btl_(leader|evo_frame)_\d+(_|$)|'
+                         r'Battle/Textures/LeaderSkin/Mask/utx_encampment_mask_\d+$)')
+FRAME_PARTS = ('battle_ui', 'evo_point')
+
+# 替换逻辑的版本：主数据的改法变了就加一，已替换过的方案会被提示/自动重新替换
+APPLY_LOGIC = 2
+
+
+def is_special(row):
+    return bool(row) and len(row) > 9 and row[6] in SPECIAL_FRAME_TYPES
+
+
+def frame_target(ra, rb, parts):
+    """原皮肤 ra 按来源 rb 显示时，主数据里 (SkinType, BaseSkinId) 应该是什么；不需要管返回 None。
+    - 选了进化演出：照搬来源的类型，并指向来源（豪华进化会连带专属边框）
+    - 只选了战斗界面/进化点插图：原皮肤自己没有专属边框而来源有 → 改成“只有专属边框”并指向来源，
+      这样边框、遮罩、进化点框都直接用来源的原生资源，进化演出保持原样
+      （原皮肤本来就有专属边框时，直接把它自己的边框图片换掉即可，不用改主数据）"""
+    if not ra or not rb or len(ra) < 10 or len(rb) < 10:
+        return None
+    base_b = rb[9] or rb[0]
+    base = base_b if base_b != ra[0] else 0
+    if wants(parts, 'evolve'):
+        return rb[6], base
+    if any(wants(parts, k) for k in FRAME_PARTS) and is_special(rb) and not is_special(ra):
+        return FRAME_TYPE_ONLY, base
+    return None
+
+
+def frame_native(ra, rb, parts):
+    """来源的专属边框类资源（战斗边框/遮罩/进化点框）是否会经 BaseSkinId 直接被原皮肤用上。"""
+    t = frame_target(ra, rb, parts)
+    return bool(t) and t[0] in SPECIAL_FRAME_TYPES and bool(t[1])
 
 # 图片类资源（用“重绘”写进原皮肤自己的纹理）
 IMAGE_PREFIXES = ('UI/', 'Card/', 'Battle/Textures/', 'Battle/BattleDungeon/', 'Sv2Warchess/')
@@ -533,6 +573,50 @@ class SkinSwapper:
     def _read_row_file(self, row):
         return self._read_orig(row)
 
+    def _lsm(self, rows=None):
+        """原始主数据里的 LeaderSkinMaster：{皮肤 ID: 行}（按主数据文件缓存）。"""
+        rows = rows or self._rows()
+        mrow = rows.get(MASTER_NAME)
+        if not mrow:
+            return {}
+        c = getattr(self, '_lsm_cache', None)
+        if c and c[0] == mrow['h']:
+            return c[1]
+        data = self._read_orig(mrow)
+        lsm = {str(r[0]): r for r in MasterMemory(data).table('LeaderSkinMaster')} if data else {}
+        self._lsm_cache = (mrow['h'], lsm)
+        return lsm
+
+    def logic_stale(self):
+        """已应用的替换是旧版替换逻辑做的、而且新逻辑写出来的主数据不一样（需要重新替换一次）。
+        资源文件的处理没变，只有主数据的改法变了，所以只比主数据；结果按状态缓存（界面会频繁查询）。"""
+        applied = self.state.get('applied') or []
+        if not applied or self.state.get('logic') == APPLY_LOGIC:
+            return False
+        rows = self._rows()
+        mrow = rows.get(MASTER_NAME)
+        if not mrow:
+            return False
+        key = (json.dumps(applied), self.state.get('time'), mrow['h'])
+        c = getattr(self, '_stale_cache', None)
+        if c and c[0] == key:
+            return c[1]
+        stale = True
+        try:
+            mdata = self._read_orig(mrow)
+            if mdata:
+                out, n, m = self._rewrite_master(mdata, swap_list(applied))
+                rec = self.state.get('files', {}).get(mrow['h'])
+                if not n and not m:
+                    stale = rec is not None
+                else:
+                    fitted = fit_size('master', out, mrow['l'])
+                    stale = fitted is None or not rec or rec.get('new') != sha1(xor_file(fitted, mrow['e']))
+        except Exception:
+            stale = True
+        self._stale_cache = (key, stale)
+        return stale
+
     # ------------------------------------------------------------ catalogue
     def catalogue(self):
         """全部主战者皮肤的信息（取原始资源，不受当前替换影响）。"""
@@ -579,11 +663,16 @@ class SkinSwapper:
         """预览把 a 显示为 b 时会替换哪些资源。原皮肤没有对应资源的项目无法替换（不能往索引里加东西）。"""
         a, b = str(a), str(b)
         rows = self._rows()
+        lsm = self._lsm(rows)
+        ra, rb = lsm.get(a), lsm.get(b)
+        frames = frame_native(ra, rb, None)
         items = []
         for nb in sorted(n for n in rows if is_skin_asset(n, b)):
             na = rep(nb, b, a)
             if BASE_ID_ASSET.search(nb):
                 status = 'native'                  # 进化特效：改 BaseSkinId 后直接用来源原生资源
+            elif na not in rows and frames and FRAME_ASSET.search(nb):
+                status = 'native'                  # 战斗边框/遮罩/进化点框：同样按 BaseSkinId 加载来源的
             elif na not in rows:
                 status = 'skip'                    # A 没有这个资源，无法替换
             elif not self._file_ok(rows[nb]):
@@ -596,11 +685,13 @@ class SkinSwapper:
         keep = sorted(n for n in rows if is_skin_asset(n, a) and rep(n, a, b) not in rows)
         mm = MasterMemory(self._read_orig(rows[MASTER_NAME]))
         labels = {r[0]: r[1] for r in mm.table('MasterTextLabel')}
-        lsm = {str(r[0]): r for r in mm.table('LeaderSkinMaster')}
-        rb = lsm.get(b)
         evolve = None
         if rb and len(rb) > 9:
-            evolve = {'skinType': rb[6], 'deluxe': rb[6] == 1, 'base': str(rb[9] or rb[0])}
+            evolve = {'skinType': rb[6], 'deluxe': rb[6] == 1, 'base': str(rb[9] or rb[0]),
+                      # 原皮肤没有专属边框、来源有：战斗边框和进化点插图只能一起换（游戏按同一个编号加载）
+                      'frameLink': is_special(rb) and not is_special(ra),
+                      # 换进化演出会连带换掉战斗边框和进化点插图
+                      'evolveFrames': frame_native(ra, rb, ('evolve',)) or (is_special(ra) and not is_special(rb))}
         pat = re.compile(LABEL_PATTERN.replace('{id}', re.escape(b)))
         subs = [{'key': rep(k, b, a), 'text': v} for k, v in labels.items() if pat.match(k)]
         cats = []
@@ -810,7 +901,7 @@ class SkinSwapper:
                         stats['labels'] = n_labels
                         stats['evolve'] = n_evo
                         if n_evo:
-                            report.append('进化演出：已让原皮肤使用来源皮肤的进化特效/音效/战斗边框')
+                            report.append('主数据：已让原皮肤按来源皮肤的方式加载进化演出/战斗边框/进化点插图，并同步立绘摆放位置')
 
         # 写入：先备份原文件，再原子替换
         if progress:
@@ -828,11 +919,13 @@ class SkinSwapper:
                 written[h] = {'name': name, 'new': sha1(enc)}
         finally:
             self.state = {'engine': 'inplace', 'files': written, 'applied': [swap_record(*s) for s in swaps],
-                          'time': time.time()}
+                          'logic': APPLY_LOGIC, 'time': time.time()}
             self._save_state()
         stats['changed'] = sum(1 for v in written.values() if v['name'] != MASTER_NAME)
-        if stats.get('evolve') or stats['native']:
+        if stats['native']:
             report.append(f'豪华进化演出：直接使用来源皮肤的原生进化特效（{stats["native"]} 项）、进化音效和战斗边框')
+        if stats.get('native_frame'):
+            report.append(f'战斗边框与进化点插图：直接使用来源皮肤的原生资源（{stats["native_frame"]} 项）')
         if stats['no_target']:
             report.append(f'{stats["no_target"]} 项来源资源在原皮肤里没有对应位置（多为其它模式的图片），保持原样')
         if progress:
@@ -843,12 +936,17 @@ class SkinSwapper:
     def _compute(self, swaps, rows, stats, progress=None, cancel=None):
         """生成每一项要写入的内容（不碰游戏文件，结果进缓存）。返回 (plan, {k: (明文, 日志, 统计)}, total)。"""
         plan, orphans = [], {}
+        lsm = self._lsm(rows)
         for a, b, parts in swaps:
+            frames = frame_native(lsm.get(a), lsm.get(b), parts)
             for nb in sorted(n for n in rows if is_skin_asset(n, b)):
                 na = rep(nb, b, a)
                 if BASE_ID_ASSET.search(nb):
                     if wants(parts, 'evolve'):
                         stats['native'] = stats.get('native', 0) + 1     # 进化特效按 BaseSkinId 直接加载来源皮肤的原生资源
+                    continue
+                if frames and na not in rows and FRAME_ASSET.search(nb):
+                    stats['native_frame'] = stats.get('native_frame', 0) + 1   # 战斗边框/进化点框同样直接用来源的
                     continue
                 if not wants(parts, categorize(nb)):
                     if na in rows:
@@ -1130,35 +1228,30 @@ class SkinSwapper:
             newlab = [d[k] for k in sorted(d, key=lambda s: s.encode('utf-16-be'))]
             mm.set_table('MasterTextLabel', newlab, high=True)
 
-        # LeaderSkinMaster：[0]=ID [6]=SkinType(1=豪华进化) [9]=BaseSkinId（进化特效/音效/战斗边框按它加载）
+        # LeaderSkinMaster：[0]=ID [6]=SkinType [9]=BaseSkinId（进化特效/音效/战斗边框/进化点框按它加载）
         lsm = mm.table('LeaderSkinMaster')
         by = {str(r[0]): r for r in lsm}
         n_evo = 0
         for a, b, parts in swaps:
-            if not wants(parts, 'evolve'):
-                continue
-            ra, rb = by.get(a), by.get(b)
-            if not ra or not rb or len(ra) < 10 or len(rb) < 10:
-                continue
-            base_b = rb[9] or rb[0]
-            if ra[6] != rb[6] or ra[9] != base_b:
-                ra[6] = rb[6]
-                ra[9] = base_b if base_b != ra[0] else 0
+            ra = by.get(a)
+            want = frame_target(ra, by.get(b), parts)
+            if want and (ra[6], ra[9]) != want:
+                ra[6], ra[9] = want
                 n_evo += 1
         if n_evo:
             mm.set_table('LeaderSkinMaster', lsm, high=True)
 
         # 各界面里立绘的摆放参数（位置/旋转/缩放）按皮肤单独配置：让原皮肤跟来源保持一致
         n_tf = 0
-        for table, mode in TRANSFORM_TABLES.items():
+        for table, (mode, part) in TRANSFORM_TABLES.items():
             if table not in mm.header:
                 continue
             rows = mm.table(table)
             by = {str(r[0]): r for r in rows}
             changed = False
             for a, b, parts in swaps:
-                if not wants(parts, 'portrait'):
-                    continue                  # 摆放参数跟着立绘走：不换立绘就保持原样
+                if not wants(parts, part):
+                    continue                  # 摆放参数跟着对应的立绘走：不换那张图就保持原样
                 rb = by.get(b)
                 if rb is not None:
                     new = list(rb)
@@ -1237,6 +1330,8 @@ class SkinSwapper:
         have = sorted(swap_list(self.state.get('applied', [])), key=repr)
         if want != have:
             return True, '替换方案有变化'
+        if self.logic_stale():
+            return True, '工具更新了替换方式（战斗边框/立绘位置），需要重新替换一次'
         for h, rec in self.state.get('files', {}).items():
             p = self._path(h)
             try:

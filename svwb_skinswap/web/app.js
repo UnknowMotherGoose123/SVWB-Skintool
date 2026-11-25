@@ -439,6 +439,19 @@ function selectedParts(p) {
   if (!off.length) return null;
   return allParts().filter((k) => !off.includes(k));
 }
+/* 有些部分游戏是按同一个编号加载的，勾选时要联动：
+   frameLink：原皮肤没有专属边框 → 战斗界面、进化点插图一起换；evolveFrames：换进化演出会连带换这两项 */
+const FRAME_KEYS = ['battle_ui', 'evo_point'];
+function togglePart(k, on) {
+  const set = (x, v) => { if (v) S.off.delete(x); else S.off.add(x); };
+  set(k, on);
+  const ev = (S.preview && S.preview.evolve) || {};
+  if (ev.frameLink && FRAME_KEYS.includes(k)) FRAME_KEYS.forEach((x) => set(x, on));
+  if (ev.evolveFrames) {
+    if (k === 'evolve' && on) FRAME_KEYS.forEach((x) => set(x, true));
+    if (FRAME_KEYS.includes(k) && !on) set('evolve', false);
+  }
+}
 function sameParts(x, y) {
   const norm = (v) => (v ? [...v].sort() : null);
   return JSON.stringify(norm(x)) === JSON.stringify(norm(y));
@@ -488,15 +501,25 @@ function renderPreview() {
 
   const keep = $('#keepNote');
   const notes = [];
-  if (p.evolve && p.evolve.deluxe && B) {
+  const ev = p.evolve || {};
+  let hi = 0;
+  if (ev.frameLink && A && B) {
+    notes.push(`「${A.name}」本身没有专属战斗边框：战斗边框和进化点插图会直接用「${B.name}」的原生资源，`
+      + `游戏按同一个编号加载它们，所以这两项会一起勾选${ev.deluxe ? '；勾选进化演出也会连带换上它们' : ''}。`);
+    hi = 1;
+  } else if (ev.deluxe && B) {
     notes.push(`豪华进化演出、进化点插图、进化音效与战斗边框：直接使用「${B.name}」的原生资源。`);
+    hi = 1;
+  }
+  if (ev.evolveFrames && !ev.frameLink) {
+    notes.push('进化演出和战斗边框、进化点插图由游戏按同一个编号加载：换进化演出会连带换掉这两项。');
   }
   if (p.keep && p.keep.length && A && B) {
     notes.push(`另有 ${p.keep.length} 项是「${A.name}」独有、「${B.name}」没有对应的资源，会保持原样。`);
   }
   notes.push('模型或图片比原文件大时，会自动适当降低纹理分辨率以放进原文件。');
   keep.hidden = !notes.length;
-  keep.innerHTML = notes.map((t, i) => `<div${i === 0 && p.evolve && p.evolve.deluxe ? ' style="color:var(--gold-hi)"' : ''}>${esc(t)}</div>`).join('');
+  keep.innerHTML = notes.map((t, i) => `<div${i < hi ? ' style="color:var(--gold-hi)"' : ''}>${esc(t)}</div>`).join('');
 
   const exists = planEntry(p.target);
   const parts = selectedParts(p);
@@ -829,7 +852,7 @@ function bind() {
     const chk = e.target.closest('.cat-chk');
     if (chk) {
       const k = chk.dataset.key;
-      if (S.off.has(k)) S.off.delete(k); else S.off.add(k);
+      togglePart(k, S.off.has(k));
       renderPreview();
       return;
     }
