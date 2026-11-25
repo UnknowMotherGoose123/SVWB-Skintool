@@ -102,7 +102,7 @@ PyInstaller 打包的单文件 exe 偶尔会被误报。可以从源码运行，
 
 ## 作者
 
-UnknowMotherGoose+Claude
+UnknowMotherGoose123
 
 ## 许可证
 
