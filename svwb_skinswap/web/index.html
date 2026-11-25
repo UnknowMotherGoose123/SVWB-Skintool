@@ -1,0 +1,242 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>影之诗 WB 主战者换皮</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-all" viewBox="0 0 24 24"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></symbol>
+    <symbol id="i-c1" viewBox="0 0 24 24"><path d="M5 19c0-8 5-13.5 14-14-.5 9-6 14-14 14z"/><path d="M5 19l7.5-7.5"/></symbol>
+    <symbol id="i-c2" viewBox="0 0 24 24"><path d="M14.5 4.5L19.5 4.5 19.5 9.5 10 19 5 14z"/><path d="M8 16l-3.5 3.5"/><path d="M6.5 12.5l5 5"/></symbol>
+    <symbol id="i-c3" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M12 5.5l1.9 4.4 4.6.4-3.5 3 1.1 4.5L12 15.4 7.9 17.8 9 13.3 5.5 10.3l4.6-.4z"/></symbol>
+    <symbol id="i-c4" viewBox="0 0 24 24"><path d="M12 3c1 3.5 5.5 5.5 5.5 10.5a5.5 5.5 0 0 1-11 0c0-2.5 1.3-4 2.3-5 .2 2 1 3 2.2 3.5C11.5 9 11 6 12 3z"/></symbol>
+    <symbol id="i-c5" viewBox="0 0 24 24"><path d="M15.5 4.5a8 8 0 1 0 4 12 6.5 6.5 0 0 1-4-12z"/><path d="M17.5 5.5l.6 1.3 1.4.2-1 1 .2 1.4-1.2-.7-1.2.7.2-1.4-1-1 1.4-.2z"/></symbol>
+    <symbol id="i-c6" viewBox="0 0 24 24"><path d="M12 4v16"/><path d="M7 9h10"/><circle cx="12" cy="9" r="4.5"/></symbol>
+    <symbol id="i-c7" viewBox="0 0 24 24"><path d="M12 3.5l7.4 4.25v8.5L12 20.5l-7.4-4.25v-8.5z"/><circle cx="12" cy="12" r="3"/><path d="M12 9V3.5M12 15v5.5"/></symbol>
+    <symbol id="i-c99" viewBox="0 0 24 24"><path d="M12 3l2 6.5L20.5 12 14 14.5 12 21l-2-6.5L3.5 12 10 9.5z"/></symbol>
+    <symbol id="i-c0" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3.5 7.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3"/><path d="M19.5 4.5v4h-4"/></symbol>
+    <symbol id="i-log" viewBox="0 0 24 24"><rect x="4.5" y="4" width="15" height="16" rx="2"/><path d="M8 9h8M8 12.5h8M8 16h5"/></symbol>
+    <symbol id="i-swap" viewBox="0 0 24 24"><path d="M4 8.5h14l-3.5-3.5"/><path d="M20 15.5H6l3.5 3.5"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h15"/><path d="M14 6.5l5.5 5.5-5.5 5.5"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5.5v13M5.5 12h13"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
+    <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4l9 15.5H3z"/><path d="M12 10v4.5M12 17.2v.3"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 11v5.5M12 7.8v.3"/></symbol>
+    <symbol id="i-undo" viewBox="0 0 24 24"><path d="M8 7.5H4.5V4"/><path d="M4.8 7.3A8 8 0 1 1 4 12.5"/></symbol>
+    <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13.5 3L5.5 13.5h6L10.5 21l8-10.5h-6z"/></symbol>
+    <symbol id="i-voice" viewBox="0 0 24 24"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></symbol>
+    <symbol id="i-evo" viewBox="0 0 24 24"><path d="M12 3.5l2.4 5 5.1.6-3.8 3.6 1 5.3L12 15.5 7.3 18l1-5.3-3.8-3.6 5.1-.6z"/></symbol>
+    <symbol id="i-orb" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7.5"/><circle cx="12" cy="12" r="3.5"/></symbol>
+    <symbol id="i-crown" viewBox="0 0 24 24"><path d="M4 18h16l1-10-5 4-4-7-4 7-5-4z"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6"/></symbol>
+    <symbol id="i-game" viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="5"/><path d="M8 10.5v3M6.5 12h3"/><circle cx="15.5" cy="11" r=".6"/><circle cx="17.5" cy="13" r=".6"/></symbol>
+  </defs>
+</svg>
+
+<div id="app" class="app">
+  <!-- ================= 顶栏 ================= -->
+  <header class="topbar">
+    <div class="brand">
+      <img src="icon.svg" alt="" class="brand-icon">
+      <div class="brand-text">
+        <div class="brand-title">主战者换皮</div>
+        <div class="brand-sub">SHADOWVERSE · WORLDS BEYOND</div>
+      </div>
+      <span id="demoBadge" class="badge badge-demo" hidden>演示模式</span>
+    </div>
+
+    <button id="dirChip" class="dir-chip" type="button" title="更换游戏目录">
+      <span class="dot" id="dirDot"></span>
+      <svg class="ico"><use href="#i-folder"/></svg>
+      <span class="dir-text" id="dirText">未选择游戏目录</span>
+      <span class="dir-action">更换</span>
+    </button>
+
+    <div class="top-actions">
+      <label class="switch" title="每次打开工具时，自动检查游戏更新是否覆盖了替换，并在需要时重新替换">
+        <input type="checkbox" id="autoRescan">
+        <span class="switch-track"><span class="switch-thumb"></span></span>
+        <span class="switch-label">启动时自动重新扫描</span>
+      </label>
+      <button class="btn btn-ghost" id="btnCheck" type="button"><svg class="ico"><use href="#i-refresh"/></svg>检查更新</button>
+      <button class="btn btn-ghost" id="btnLog" type="button"><svg class="ico"><use href="#i-log"/></svg>日志<span class="count" id="logBadge" hidden>0</span></button>
+    </div>
+  </header>
+
+  <div class="banner banner-danger" id="bannerRunning" hidden>
+    <svg class="ico"><use href="#i-game"/></svg>
+    <span>检测到游戏正在运行（<b id="runningName"></b>）。替换和还原需要先完全退出游戏。</span>
+  </div>
+  <div class="banner banner-danger" id="bannerMeta" hidden>
+    <svg class="ico"><use href="#i-warn"/></svg>
+    <span id="metaText"></span>
+    <button class="btn btn-sm btn-gold" id="btnRestoreMeta" type="button">一键恢复</button>
+  </div>
+  <div class="banner banner-warn" id="bannerHealth" hidden>
+    <svg class="ico"><use href="#i-warn"/></svg>
+    <span id="healthText"></span>
+    <button class="btn btn-sm btn-gold" id="bannerApply" type="button">重新替换</button>
+  </div>
+
+  <!-- ================= 主体 ================= -->
+  <main class="main">
+    <!-- ---------- 左：皮肤浏览 ---------- -->
+    <section class="browser" aria-label="皮肤列表">
+      <div class="browser-head">
+        <div class="picking" id="pickingHint">
+          <span class="picking-dot"></span>
+          <span id="pickingText">点选下面的皮肤，填入「我拥有的皮肤」</span>
+        </div>
+        <div class="search">
+          <svg class="ico"><use href="#i-search"/></svg>
+          <input id="search" type="search" placeholder="搜索名字 / ID / 声优" autocomplete="off" spellcheck="false">
+        </div>
+      </div>
+
+      <nav class="classbar" id="classBar" aria-label="职业筛选"></nav>
+
+      <div class="quickbar">
+        <button class="qchip qchip-gold" data-q="deluxe" type="button"><svg class="ico"><use href="#i-crown"/></svg>豪华版</button>
+        <button class="qchip" data-q="voice" type="button"><svg class="ico"><use href="#i-voice"/></svg>有语音</button>
+        <button class="qchip" data-q="evolve" type="button"><svg class="ico"><use href="#i-evo"/></svg>有进化演出</button>
+        <button class="qchip" data-q="evopoint" type="button"><svg class="ico"><use href="#i-orb"/></svg>有进化点插图</button>
+        <span class="result-count" id="resultCount"></span>
+      </div>
+
+      <div class="grid-wrap" id="gridWrap">
+        <div class="grid" id="grid" role="listbox" aria-label="皮肤"></div>
+        <div class="empty" id="empty" hidden>
+          <svg class="ico"><use href="#i-search"/></svg>
+          <div>没有符合条件的皮肤</div>
+          <button class="btn btn-ghost btn-sm" id="clearFilters" type="button">清除筛选</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ---------- 右：替换舞台 ---------- -->
+    <aside class="stage" aria-label="替换设置">
+      <div class="stage-scroll">
+        <div class="slots">
+          <button class="slot slot-a is-active" id="slotA" type="button" data-slot="a">
+            <span class="slot-tag">我拥有的皮肤</span>
+            <span class="slot-art"><span class="slot-glow"></span><img alt="" id="artA" hidden></span>
+            <span class="slot-empty" id="emptyA"><svg class="ico"><use href="#i-plus"/></svg>在左侧选择<br>游戏里装备的皮肤</span>
+            <span class="slot-info"><span class="slot-name" id="nameA">未选择</span><span class="slot-meta" id="metaA">会被替换的那个</span></span>
+          </button>
+
+          <div class="slot-arrow" aria-hidden="true">
+            <svg class="ico"><use href="#i-arrow"/></svg>
+            <span>显示为</span>
+          </div>
+
+          <button class="slot slot-b" id="slotB" type="button" data-slot="b">
+            <span class="slot-tag">想显示的皮肤</span>
+            <span class="slot-art"><span class="slot-glow"></span><img alt="" id="artB" hidden></span>
+            <span class="slot-empty" id="emptyB"><svg class="ico"><use href="#i-plus"/></svg>再选择想要的<br>模型 / 语音 / 字幕</span>
+            <span class="slot-info"><span class="slot-name" id="nameB">未选择</span><span class="slot-meta" id="metaB">模型、语音、字幕的来源</span></span>
+          </button>
+        </div>
+
+        <div class="preview card" id="preview" hidden>
+          <div class="card-head">
+            <div class="card-title">替换预览</div>
+            <div class="preview-total" id="previewTotal"></div>
+          </div>
+          <div class="evo-compare" id="evoCompare" hidden>
+            <div class="evo-col"><img id="evoA" alt=""><img id="evoSA" alt=""></div>
+            <svg class="ico evo-arrow"><use href="#i-arrow"/></svg>
+            <div class="evo-col"><img id="evoB" alt=""><img id="evoSB" alt=""></div>
+            <div class="evo-label">进化点插图</div>
+          </div>
+          <div class="cats" id="cats"></div>
+          <div class="cat-detail" id="catDetail" hidden></div>
+          <div class="keep-note" id="keepNote" hidden></div>
+          <button class="btn btn-violet btn-block" id="btnAdd" type="button"><svg class="ico"><use href="#i-plus"/></svg>加入替换方案</button>
+        </div>
+        <div class="preview-loading card" id="previewLoading" hidden><div class="spinner"></div>正在分析会替换哪些资源…</div>
+      </div>
+
+      <div class="stage-actions">
+        <div class="plan">
+          <div class="card-head">
+            <div class="card-title">替换方案</div>
+            <div class="dirty" id="dirtyTag" hidden><span class="pulse"></span>有未应用的修改</div>
+          </div>
+          <div class="plan-list" id="planList"></div>
+          <div class="plan-empty" id="planEmpty">还没有替换方案。选好两侧的皮肤后点「加入替换方案」。</div>
+        </div>
+        <button class="btn btn-gold btn-lg" id="btnApply" type="button"><svg class="ico"><use href="#i-bolt"/></svg><span id="applyText">一键替换</span></button>
+        <button class="btn btn-danger-ghost" id="btnRevert" type="button"><svg class="ico"><use href="#i-undo"/></svg>全部还原</button>
+        <p class="fineprint">只在你的电脑上生效，对手看到的仍是你实际装备的皮肤。替换或还原前请先完全退出游戏。</p>
+      </div>
+
+      <div class="task" id="task" hidden>
+        <div class="task-ring">
+          <svg viewBox="0 0 120 120"><circle class="ring-bg" cx="60" cy="60" r="52"/><circle class="ring-fg" id="ringFg" cx="60" cy="60" r="52"/></svg>
+          <div class="task-pct" id="taskPct">0%</div>
+        </div>
+        <div class="task-label" id="taskLabel">正在替换</div>
+        <div class="task-text" id="taskText"></div>
+      </div>
+    </aside>
+  </main>
+
+  <!-- ================= 日志抽屉 ================= -->
+  <section class="logdrawer" id="logDrawer" hidden aria-label="日志">
+    <div class="logdrawer-head">
+      <div class="card-title">运行日志</div>
+      <label class="mini-check"><input type="checkbox" id="showDebug">显示详细错误</label>
+      <button class="icon-btn" id="logClose" type="button" aria-label="关闭日志"><svg class="ico"><use href="#i-close"/></svg></button>
+    </div>
+    <div class="loglist" id="logList"></div>
+  </section>
+
+  <!-- ================= 目录对话框 / 首次引导 ================= -->
+  <div class="overlay" id="dirOverlay" hidden>
+    <div class="dialog dialog-dir" role="dialog" aria-modal="true" aria-labelledby="dirTitle">
+      <img src="icon.svg" alt="" class="dialog-icon">
+      <h2 id="dirTitle">选择影之诗的安装目录</h2>
+      <p class="dialog-sub">选择包含 <code>…_Data</code> 文件夹的那一层，例如 <code>E:\shadowverse</code>。</p>
+      <div class="detected" id="detected">
+        <div class="detected-loading"><div class="spinner"></div>正在自动查找…</div>
+      </div>
+      <div class="dir-input">
+        <input id="dirInput" type="text" placeholder="也可以直接粘贴路径" spellcheck="false">
+        <button class="btn btn-violet" id="dirUse" type="button">使用</button>
+      </div>
+      <div class="dir-error" id="dirError" hidden></div>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" id="dirBrowse" type="button"><svg class="ico"><use href="#i-folder"/></svg>浏览…</button>
+        <button class="btn btn-ghost" id="dirCancel" type="button">取消</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 确认框 ================= -->
+  <div class="overlay" id="confirmOverlay" hidden>
+    <div class="dialog dialog-confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle">
+      <div class="confirm-icon"><svg class="ico"><use href="#i-undo"/></svg></div>
+      <h2 id="confirmTitle">全部还原？</h2>
+      <p class="dialog-sub" id="confirmText">所有替换都会撤销，游戏里恢复成原本的皮肤，替换方案也会清空。</p>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" id="confirmNo" type="button">取消</button>
+        <button class="btn btn-danger" id="confirmYes" type="button">确定还原</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>

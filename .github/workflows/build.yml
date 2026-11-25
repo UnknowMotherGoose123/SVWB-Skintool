@@ -1,0 +1,54 @@
+# 打包 exe：
+#   - 推送 v* 标签（如 v2.0.0）：打包并发布到对应的 GitHub Release
+#   - 在 Actions 页面手动运行：只打包，exe 在本次运行的 Artifacts 里下载
+name: Build exe
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: 检查能否导入
+        run: python -c "import svwb_skinswap.server, svwb_skinswap.usm, svwb_skinswap.spine; print('ok')"
+
+      - name: 打包
+        run: python tools/build_exe.py
+
+      - name: 改成英文文件名
+        shell: pwsh
+        run: |
+          $ver = if ($env:GITHUB_REF_TYPE -eq 'tag') { $env:GITHUB_REF_NAME } else { 'dev' }
+          $exe = Get-ChildItem dist -Filter *.exe | Select-Object -First 1
+          Copy-Item $exe.FullName "dist/SVWBSkinSwap-$ver.exe"
+          Get-ChildItem dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SVWBSkinSwap
+          path: dist/SVWBSkinSwap-*.exe
+
+      - name: 发布 Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/SVWBSkinSwap-*.exe
+          generate_release_notes: true

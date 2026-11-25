@@ -1,0 +1,8 @@
+# 运行依赖（打包另需 pyinstaller）
+UnityPy>=1.25,<2
+Pillow>=11
+lz4>=4.3
+xxhash>=3.4
+msgpack>=1.0
+av>=14            # 视频放不进原文件时重新编码成 VP9（自带 FFmpeg/libvpx）
+etcpak>=0.9.9     # BC7 纹理编码（UnityPy 依赖，这里单独写明版本下限）

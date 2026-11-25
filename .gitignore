@@ -1,0 +1,27 @@
+# 打包产物
+build/
+dist/
+*.spec
+*.exe
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+
+# 运行时数据（缓存、备份、日志都在 %LOCALAPPDATA%\SVWBSkinSwap，不在仓库里）
+selftest.txt
+selftest.webp
+*.log
+
+# 早期的独立修复工具：功能已并入主程序的“一键还原/一键恢复”，不再发布
+repair_tool.py
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
