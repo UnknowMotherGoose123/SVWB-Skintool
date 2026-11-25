@@ -30,6 +30,12 @@ def build(name, tmp_name, script, extra):
 
 
 def main():
+    # GitHub Actions 的 Windows 机器上输出被重定向时默认是 cp1252，打印中文会直接报错退出
+    for s in (sys.stdout, sys.stderr):
+        try:
+            s.reconfigure(encoding='utf-8', errors='replace')
+        except Exception:
+            pass
     build('影之诗WB换皮工具', 'SVWBSkinSwap', 'run_skinswap.py', [
         '--add-data', os.path.join(ROOT, 'svwb_skinswap', 'web') + os.pathsep + 'svwb_skinswap/web',
         '--collect-all', 'UnityPy',

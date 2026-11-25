@@ -14,6 +14,9 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      PYTHONUTF8: '1'              # 输出里有中文；不设的话 Windows 机器按 cp1252 输出会报错
+      PYTHONIOENCODING: utf-8
     steps:
       - uses: actions/checkout@v4
 
