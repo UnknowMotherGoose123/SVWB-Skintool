@@ -25,7 +25,7 @@ import UnityPy  # noqa: E402
 import math  # noqa: E402
 
 from .crypto import xor_file, checksum  # noqa: E402
-from .texfit import repaint_bundle, shrink_bundle, embed_cab, has_textures, shutdown_pool  # noqa: E402
+from .texfit import repaint_bundle, shrink_bundle, merge_cabs, has_textures, shutdown_pool  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 import threading  # noqa: E402
 from .texfit import estimate_lzma_size  # noqa: E402
@@ -138,8 +138,11 @@ FRAME_ASSET = re.compile(r'^(UI/LeaderSkinFrame/utx_base_btl_(leader|evo_frame)_
                          r'Battle/Textures/LeaderSkin/Mask/utx_encampment_mask_\d+$)')
 FRAME_PARTS = ('battle_ui', 'evo_point')
 
-# 替换逻辑的版本：主数据的改法变了就加一，已替换过的方案会被提示/自动重新替换
-APPLY_LOGIC = 2
+# 替换逻辑的版本：改法变了就加一，已替换过的方案会被提示/自动重新替换
+#   2：战斗边框/立绘摆放（只比主数据）
+#   3：模型自带的进化时间轴/特效改为并进模型主文件（旧版单独塞进包里，游戏找不到）
+APPLY_LOGIC = 3
+MERGE_LOGIC = 3
 
 
 def is_special(row):
@@ -173,6 +176,15 @@ IMAGE_PREFIXES = ('UI/', 'Card/', 'Battle/Textures/', 'Battle/BattleDungeon/', '
 
 # 对战时按 BaseSkinId 加载的进化特效：改了主数据的 BaseSkinId 后，游戏直接用来源皮肤自己的这些资源
 BASE_ID_ASSET = re.compile(r'^(Battle/Effect/Prefab/cmn_high_evo_\d+_\d+|sound/Windows/f/fx_evo_\d+\.pck)$')
+
+
+def model_bound(rows, deps, b):
+    """来源模型引用的皮肤资源（进化时间轴 Evolve_B、时间轴里生成的特效 skn_class_B_* 等）。
+    游戏不按名字加载它们，而是模型里的导演组件直接引用，所以它们算模型的一部分：
+    跟着“主战者模型”一起换，并进模型的主文件（原皮肤多半没有位置放，有也常常放不下）。
+    返回 (资源名集合, 来源模型名)。"""
+    mb = f'Prefabs/LeaderSkin/class_{b}'
+    return {d for d in deps.get(mb, ()) if d in rows and d != mb and is_skin_asset(d, b)}, mb
 
 
 def short(name):
@@ -460,7 +472,7 @@ BACKUP_DIRNAME = 'backup'
 from .usm import Cancelled, _check  # noqa: E402,F401  后台预计算的取消信号
 
 
-FIT_CACHE_VER = 'fit-2026.11.25-1'      # 处理算法有变化时改这里，让旧缓存失效
+FIT_CACHE_VER = 'fit-2026.11.26-1'      # 处理算法有变化时改这里，让旧缓存失效
 FIT_CACHE_LIMIT = 3 * 1024 ** 3          # 结果缓存最多占 3GB，超出删最久没用的
 
 
@@ -588,8 +600,9 @@ class SkinSwapper:
         return lsm
 
     def logic_stale(self):
-        """已应用的替换是旧版替换逻辑做的、而且新逻辑写出来的主数据不一样（需要重新替换一次）。
-        资源文件的处理没变，只有主数据的改法变了，所以只比主数据；结果按状态缓存（界面会频繁查询）。"""
+        """已应用的替换是旧版替换逻辑做的、而且新逻辑做出来会不一样（需要重新替换一次）：
+        来源模型带进化时间轴/特效的组合一定要重做；其它组合只有主数据的改法变了，只比主数据。
+        结果按状态缓存（界面会频繁查询）。"""
         applied = self.state.get('applied') or []
         if not applied or self.state.get('logic') == APPLY_LOGIC:
             return False
@@ -603,9 +616,14 @@ class SkinSwapper:
             return c[1]
         stale = True
         try:
-            mdata = self._read_orig(mrow)
-            if mdata:
-                out, n, m = self._rewrite_master(mdata, swap_list(applied))
+            swaps = swap_list(applied)
+            deps = self._deps()
+            if (self.state.get('logic') or 0) < MERGE_LOGIC and any(
+                    wants(parts, 'model') and model_bound(rows, deps, b)[0]
+                    and rep(f'Prefabs/LeaderSkin/class_{b}', b, a) in rows for a, b, parts in swaps):
+                pass                       # 模型带进化时间轴/特效的组合：旧版做法游戏加载不到，要重做
+            elif (mdata := self._read_orig(mrow)):
+                out, n, m = self._rewrite_master(mdata, swaps)
                 rec = self.state.get('files', {}).get(mrow['h'])
                 if not n and not m:
                     stale = rec is not None
@@ -666,11 +684,17 @@ class SkinSwapper:
         lsm = self._lsm(rows)
         ra, rb = lsm.get(a), lsm.get(b)
         frames = frame_native(ra, rb, None)
+        bound, mb = model_bound(rows, self._deps(), b)
         items = []
         for nb in sorted(n for n in rows if is_skin_asset(n, b)):
             na = rep(nb, b, a)
+            cat = categorize(nb)
             if BASE_ID_ASSET.search(nb):
                 status = 'native'                  # 进化特效：改 BaseSkinId 后直接用来源原生资源
+            elif nb in bound:
+                cat = 'model'                      # 模型自己的进化时间轴/特效：并进模型主文件
+                status = ('skip' if rep(mb, b, a) not in rows else
+                          'missing' if not self._file_ok(rows[nb]) else 'merge')
             elif na not in rows and frames and FRAME_ASSET.search(nb):
                 status = 'native'                  # 战斗边框/遮罩/进化点框：同样按 BaseSkinId 加载来源的
             elif na not in rows:
@@ -681,7 +705,8 @@ class SkinSwapper:
                 status = 'target_missing'          # 目标没下载
             else:
                 status = 'replace'
-            items.append({'name': na, 'from': nb, 'cat': categorize(nb), 'status': status})
+            # 并进模型的项目在原皮肤里不一定有同名资源，显示来源的名字
+            items.append({'name': nb if status == 'merge' else na, 'from': nb, 'cat': cat, 'status': status})
         keep = sorted(n for n in rows if is_skin_asset(n, a) and rep(n, a, b) not in rows)
         mm = MasterMemory(self._read_orig(rows[MASTER_NAME]))
         labels = {r[0]: r[1] for r in mm.table('MasterTextLabel')}
@@ -698,15 +723,16 @@ class SkinSwapper:
         for key, label, _ in CATEGORIES:
             its = [x for x in items if x['cat'] == key]
             if its:
-                good = ('replace', 'native')
+                good = ('replace', 'native', 'merge')
                 cats.append({'key': key, 'label': label, 'count': sum(1 for x in its if x['status'] in good),
                              'missing': sum(1 for x in its if x['status'] not in good), 'items': its})
         if subs:
             cats.append({'key': 'subtitle', 'label': '字幕与名字', 'count': len(subs), 'missing': 0,
                          'items': [{'name': s['key'], 'text': s['text'], 'cat': 'subtitle', 'status': 'replace'} for s in subs]})
-        ok = sum(1 for x in items if x['status'] in ('replace', 'native'))
+        good = ('replace', 'native', 'merge')
+        ok = sum(1 for x in items if x['status'] in good)
         return {'target': a, 'source': b, 'categories': cats, 'total': ok + len(subs), 'evolve': evolve,
-                'missing': sum(1 for x in items if x['status'] not in ('replace', 'native')),
+                'missing': sum(1 for x in items if x['status'] not in good),
                 'keep': [{'name': n, 'cat': categorize(n)} for n in keep]}
 
     def export_image(self, kind, sid, cache_dir):
@@ -926,6 +952,8 @@ class SkinSwapper:
             report.append(f'豪华进化演出：直接使用来源皮肤的原生进化特效（{stats["native"]} 项）、进化音效和战斗边框')
         if stats.get('native_frame'):
             report.append(f'战斗边框与进化点插图：直接使用来源皮肤的原生资源（{stats["native_frame"]} 项）')
+        if stats.get('merged'):
+            report.append(f'模型自带的进化动作/特效：{stats["merged"]} 个包已并入模型，随模型一起加载')
         if stats['no_target']:
             report.append(f'{stats["no_target"]} 项来源资源在原皮肤里没有对应位置（多为其它模式的图片），保持原样')
         if progress:
@@ -935,10 +963,13 @@ class SkinSwapper:
 
     def _compute(self, swaps, rows, stats, progress=None, cancel=None):
         """生成每一项要写入的内容（不碰游戏文件，结果进缓存）。返回 (plan, {k: (明文, 日志, 统计)}, total)。"""
-        plan, orphans = [], {}
+        plan = []
+        merges = {}            # (A, 来源模型) -> [并进模型的来源依赖包]
         lsm = self._lsm(rows)
+        deps = self._deps()
         for a, b, parts in swaps:
             frames = frame_native(lsm.get(a), lsm.get(b), parts)
+            bound, mb = model_bound(rows, deps, b)
             for nb in sorted(n for n in rows if is_skin_asset(n, b)):
                 na = rep(nb, b, a)
                 if BASE_ID_ASSET.search(nb):
@@ -948,43 +979,51 @@ class SkinSwapper:
                 if frames and na not in rows and FRAME_ASSET.search(nb):
                     stats['native_frame'] = stats.get('native_frame', 0) + 1   # 战斗边框/进化点框同样直接用来源的
                     continue
+                if nb in bound:
+                    # 模型自己的进化时间轴、时间轴里生成的特效：跟着模型走，并进模型的主文件
+                    if wants(parts, 'model') and rep(mb, b, a) in rows:
+                        merges.setdefault((a, mb), []).append(nb)
+                        stats['merged'] = stats.get('merged', 0) + 1
+                    elif na in rows:
+                        stats['excluded'] = stats.get('excluded', 0) + 1
+                    continue
                 if not wants(parts, categorize(nb)):
                     if na in rows:
                         stats['excluded'] = stats.get('excluded', 0) + 1   # 用户选择不替换这一部分
-                    else:
-                        orphans.setdefault(a, []).append(nb)
                     continue
                 if na not in rows:
-                    stats['no_target'] = stats.get('no_target', 0) + 1
-                    orphans.setdefault(a, []).append(nb)     # 原皮肤没有的来源资源（可能需要嵌入）
+                    stats['no_target'] = stats.get('no_target', 0) + 1     # 原皮肤没有的来源资源，无法替换
                     continue
                 plan.append((a, b, nb, na))
         total = len(plan) + 1
-        deps = self._deps()
 
         # 先全部读出来（来源和目标都按原始内容）
         cab_maps, srcs = {}, {}
+
+        def add_cabs(a, data):
+            if data and data[:7] == b'UnityFS':
+                for cab in bundle_cabs(data):
+                    cab_maps.setdefault(a, {})[cab] = 'CAB-' + hashlib.md5(f'{cab}>{a}'.encode()).hexdigest()
+
         for k, (a, b, nb, na) in enumerate(plan):
             _check(cancel)
             if progress:
                 progress(0, total, f'读取 {os.path.basename(nb)}')
             data = self._read_orig(rows[nb])
             srcs[(a, nb)] = data
-            if data and data[:7] == b'UnityFS':
-                for cab in bundle_cabs(data):
-                    cab_maps.setdefault(a, {})[cab] = 'CAB-' + hashlib.md5(f'{cab}>{a}'.encode()).hexdigest()
-        # 被依赖、但原皮肤没有对应位置的来源包（典型：进化时间轴 Evolve_B）→ 改名后嵌进依赖它的包
+            add_cabs(a, data)
+        # 要并进模型的来源依赖包（改名规则和其它来源包一致，模型里对它们的引用才对得上）
         embeds = {}
-        for a, names in orphans.items():
+        for (a, mb), names in merges.items():
+            got = []
             for nb in names:
-                if not any(nb in deps.get(x, ()) for (aa, bb, x, _) in plan if aa == a):
-                    continue
                 data = self._read_orig(rows[nb])
                 if not data or data[:7] != b'UnityFS':
+                    stats['skipped'] = stats.get('skipped', 0) + 1
                     continue
-                for cab in bundle_cabs(data):
-                    cab_maps.setdefault(a, {})[cab] = 'CAB-' + hashlib.md5(f'{cab}>{a}'.encode()).hexdigest()
-                embeds[(a, nb)] = data
+                add_cabs(a, data)
+                got.append((nb, data))
+            embeds[(a, mb)] = got
 
         results, todo, futures = {}, [], {}
         video_pool = ThreadPoolExecutor(max_workers=2)    # 视频编码一开始就放到后台线程，和模型包处理全程并行
@@ -998,13 +1037,13 @@ class SkinSwapper:
                 if not self._file_ok(dst):
                     results[k] = (None, [f'跳过（原皮肤这项没下载）：{na}'], {'skipped': 1})
                     continue
-                emb = [embeds[(a, dn)] for dn in deps.get(nb, ()) if (a, dn) in embeds]
-                key = self._fit_key(a, b, nb, na, dst, data, cab_maps.get(a, {}), emb)
+                emb = embeds.get((a, nb), [])
+                key = self._fit_key(a, b, nb, na, dst, data, cab_maps.get(a, {}), [d for _, d in emb])
                 hit = self._cache_get(key)
                 if hit is not None:
                     results[k] = hit
                     continue
-                args = (k, total, a, b, nb, na, data, dst, cab_maps, deps, embeds, progress, cancel)
+                args = (k, total, a, b, nb, na, data, dst, cab_maps, emb, progress, cancel)
                 if data[:4] == b'CRID':
                     futures[k] = (key, video_pool.submit(self._fit_item, *args))
                 else:
@@ -1086,7 +1125,7 @@ class SkinSwapper:
                 progress(k, n, t)
         job['thread'].join()
 
-    def _fit_item(self, k, total, a, b, nb, na, data, dst, cab_maps, deps, embeds, progress, cancel=None):
+    def _fit_item(self, k, total, a, b, nb, na, data, dst, cab_maps, emb, progress, cancel=None):
         """处理一项资源，返回 (写入的明文 / None, 日志, 统计增量)。"""
         notes, add = [], {}
         try:
@@ -1112,10 +1151,10 @@ class SkinSwapper:
                 elif fitted is None and not is_image:
                     cm = cab_maps.get(a, {})
                     out = rewrite_bundle(data, b, a, cm)
-                    for dn in deps.get(nb, ()):
-                        if (a, dn) in embeds:
-                            out = embed_cab(out, rewrite_bundle(embeds[(a, dn)], b, a, cm))
-                            notes.append(f'已把 {short(dn)} 嵌入 {short(na)}')
+                    if emb:
+                        # 模型自己的进化时间轴/特效：对象并进模型主文件，引用变成文件内引用
+                        out = merge_cabs(out, [rewrite_bundle(d, b, a, cm) for _, d in emb])
+                        notes.append(f'已把 {"、".join(short(dn) for dn, _ in emb)} 并入 {short(na)}')
                     fitted = self._fit_bundle(out, dst['l'], na, notes, progress, k, total, cancel)
             elif data[:4] == b'AKPK':
                 data_a = self._read_orig(dst)
@@ -1270,7 +1309,15 @@ class SkinSwapper:
         return mm.build(), n, n_evo + n_tf
 
     def _deps(self):
-        """{资源名: {它依赖的资源名}}（只读 meta 的 r 表）。"""
+        """{资源名: {它依赖的资源名}}（只读 meta 的 r 表；和 _rows 一样按 meta 文件缓存）。"""
+        try:
+            st = os.stat(self.meta)
+            key = (st.st_mtime_ns, st.st_size)
+        except OSError:
+            key = None
+        cached = getattr(self, '_deps_cache', None)
+        if key and cached and cached[0] == key:
+            return cached[1]
         con = self._connect()
         try:
             names = {i: n for i, n in con.execute('select i,n from a')}
@@ -1278,9 +1325,11 @@ class SkinSwapper:
             for f, t in con.execute('select f,t from r where f<>t'):
                 if f in names and t in names:
                     out.setdefault(names[f], set()).add(names[t])
-            return out
         finally:
             con.close()
+        if key:
+            self._deps_cache = (key, out)
+        return out
 
     def _fit_bundle(self, out, size, name, report, progress, k, total, cancel=None):
         """改写后的包放进 size 字节：先试 LZ4，再试 LZMA，最后按比例缩小纹理。"""
@@ -1331,7 +1380,7 @@ class SkinSwapper:
         if want != have:
             return True, '替换方案有变化'
         if self.logic_stale():
-            return True, '工具更新了替换方式（战斗边框/立绘位置），需要重新替换一次'
+            return True, '工具更新了替换方式（进化动作特效/战斗边框/立绘位置），需要重新替换一次'
         for h, rec in self.state.get('files', {}).items():
             p = self._path(h)
             try:

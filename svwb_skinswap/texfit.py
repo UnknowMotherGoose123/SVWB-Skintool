@@ -1,8 +1,9 @@
 """纹理相关的“放得下”处理：
   * repaint_bundle：把来源包的画面缩放后，按原格式/尺寸/mipmap 写进目标包自己的纹理（包结构完全不变）
   * shrink_bundle：按比例缩小包里的纹理（Spine 图集用归一化坐标，缩小纹理不影响动画定位）
-  * embed_cab：把依赖包（如进化时间轴）的序列化文件嵌进主包，随主包一起加载
+  * merge_cabs：把依赖包（进化时间轴、时间轴里生成的特效）的对象并进主包的主文件，随主包一起加载
 """
+import copy
 import io
 import lzma
 import math
@@ -10,6 +11,7 @@ import os
 import struct
 import threading
 
+import attrs
 import UnityPy
 from PIL import Image, ImageChops
 from UnityPy.export.Texture2DConverter import image_to_texture2d
@@ -334,19 +336,161 @@ def shrink_bundle(data: bytes, scale: float) -> bytes:
     return env.file.save(packer=_flags(env))
 
 
-def embed_cab(main: bytes, dep: bytes) -> bytes:
-    """把依赖包里的序列化文件（及其 .resS）一起放进主包。CAB 名不变（调用方之后统一改名）。"""
-    env = UnityPy.load(main)
-    denv = UnityPy.load(dep)
-    for name, f in denv.file.files.items():
-        if name in env.file.files:
-            continue
-        if hasattr(f, 'objects'):
-            # 去掉依赖包自己的 AssetBundle 对象，避免一个包里出现两个
-            for pid, obj in list(f.objects.items()):
-                if obj.type.name == 'AssetBundle':
-                    del f.objects[pid]
-            env.file.files[name] = _RawNode(f.save(), getattr(f, 'flags', 4))
+# ---------------------------------------------------------------- 合并依赖包
+# 游戏只按索引里的依赖关系加载包；原皮肤没有位置放的来源依赖包（进化时间轴、时间轴里生成的特效等）
+# 只能放进会被加载的包里。包里的所有文件都挂在“包名”目录下（archive:/<主 CAB>/<文件>），
+# 单独塞一个序列化文件进去，别的文件按 archive:/<它的 CAB>/<它的 CAB> 是找不到的——
+# 所以把它的对象直接并进主文件，引用全部改成文件内引用，纹理数据也写进对象本身。
+
+# 不会引用其它资源的大对象：扫描引用时跳过（省时间）
+_LEAF_TYPES = {'Texture2D', 'Texture2DArray', 'Cubemap', 'TextAsset', 'Mesh', 'AudioClip', 'VideoClip', 'Shader', 'Font'}
+
+
+def _main_file(bundle):
+    """包里的主序列化文件（名字不带扩展名的那个）。"""
+    for name, f in bundle.files.items():
+        if hasattr(f, 'objects') and '.' not in name:
+            return f
+    raise ValueError('包里没有序列化文件')
+
+
+def _cab_of(path):
+    return str(path).rsplit('/', 1)[-1]
+
+
+def _remap_pptrs(node, fmap):
+    """把 typetree 里所有 PPtr 的 m_FileID 按 fmap（旧 → 新）改掉，返回是否有改动。"""
+    changed = False
+    if isinstance(node, dict):
+        if 'm_FileID' in node and 'm_PathID' in node:
+            new = fmap.get(node['m_FileID'], node['m_FileID'])
+            if new != node['m_FileID']:
+                node['m_FileID'] = new
+                return True
+            return False
+        for v in node.values():
+            if isinstance(v, (dict, list, tuple)):
+                changed |= _remap_pptrs(v, fmap)
+    elif isinstance(node, (list, tuple)):
+        for v in node:
+            if isinstance(v, (dict, list, tuple)):
+                changed |= _remap_pptrs(v, fmap)
+    return changed
+
+
+def _ext_index(sf, ext):
+    """sf 里指向 ext.path 的外部引用序号（从 1 开始），没有就加一条。"""
+    for i, e in enumerate(sf.externals):
+        if e.path == ext.path:
+            return i + 1
+    sf.externals.append(copy.copy(ext))
+    return len(sf.externals)
+
+
+def _type_index(dst, src, st, fmap):
+    """把来源文件的类型 st 对应到目标文件的类型表（相同的直接复用，没有就加一条），返回序号。"""
+    for i, t in enumerate(dst.types):
+        if t.class_id == st.class_id and t.old_type_hash == st.old_type_hash and \
+                (st.class_id != 114 or t.script_id == st.script_id):
+            return i
+    nt = copy.copy(st)
+    if st.class_id == 114 and st.script_type_index is not None and st.script_type_index >= 0:
+        ls = src.script_types[st.script_type_index]
+        fi = fmap.get(ls.local_serialized_file_index, ls.local_serialized_file_index) \
+            if ls.local_serialized_file_index else 0
+        for j, s2 in enumerate(dst.script_types):
+            if s2.local_serialized_file_index == fi and s2.local_identifier_in_file == ls.local_identifier_in_file:
+                nt.script_type_index = j
+                break
         else:
-            env.file.files[name] = _RawNode(f.bytes, getattr(f, 'flags', 0))
+            ns = copy.copy(ls)
+            ns.local_serialized_file_index = fi
+            dst.script_types.append(ns)
+            nt.script_type_index = len(dst.script_types) - 1
+    dst.types.append(nt)
+    return len(dst.types) - 1
+
+
+def merge_cabs(main: bytes, deps) -> bytes:
+    """把依赖包 deps 的对象并进 main 包的主文件（去掉它们自己的 AssetBundle 对象）。
+    main 和 deps 之间、deps 彼此之间的引用都变成文件内引用；其它外部引用（着色器等）按路径对上。
+    依赖包放在 .resS 里的纹理数据直接写进纹理对象。调用前各包应已改好 CAB 名。"""
+    env = UnityPy.load(main)
+    m = _main_file(env.file)
+    srcs = []
+    for dep in deps:
+        denv = UnityPy.load(dep)
+        s = _main_file(denv.file)
+        bufs = {name: (f.bytes if hasattr(f, 'bytes') else f.save())
+                for name, f in denv.file.files.items() if not hasattr(f, 'objects')}
+        srcs.append((s, bufs))
+    merged = {m.name} | {s.name for s, _ in srcs}
+
+    # 1. 主文件里原来指向这些依赖包的引用 → 文件内
+    mmap = {i + 1: 0 for i, e in enumerate(m.externals) if _cab_of(e.path) in merged}
+    if mmap:
+        for obj in list(m.objects.values()):
+            if obj.type.name in _LEAF_TYPES:
+                continue
+            tt = obj.read_typetree()
+            if _remap_pptrs(tt, mmap):
+                obj.save_typetree(tt)
+        for ls in m.script_types:
+            if ls.local_serialized_file_index in mmap:
+                ls.local_serialized_file_index = 0
+
+    # 2. 依赖包的对象搬进主文件
+    for s, bufs in srcs:
+        fmap = {i + 1: (0 if _cab_of(e.path) in merged else _ext_index(m, e)) for i, e in enumerate(s.externals)}
+        tmap = {}
+        for pid, obj in s.objects.items():
+            if obj.type.name == 'AssetBundle':
+                continue
+            if pid in m.objects:
+                if m.objects[pid].class_id == obj.class_id:
+                    continue        # 同一个资源（Unity 的对象编号由资源本身决定，例如同一个脚本）
+                raise ValueError(f'对象编号冲突：{pid}')
+            tt = obj.read_typetree()
+            changed = _remap_pptrs(tt, fmap)
+            if isinstance(tt, dict):
+                for key in ('m_StreamData', 'm_Resource'):
+                    sd = tt.get(key)
+                    if not isinstance(sd, dict):
+                        continue
+                    path = sd.get('path') or sd.get('m_Source') or ''
+                    size = sd.get('size', sd.get('m_Size', 0))
+                    if not path or not size:
+                        continue
+                    if obj.type.name != 'Texture2D' or key != 'm_StreamData':
+                        raise ValueError(f'{obj.type.name} 的外部数据无法合并')
+                    blob = bufs.get(_cab_of(path))
+                    if blob is None:
+                        raise ValueError(f'找不到外部数据 {path}')
+                    tt['image data'] = bytes(blob[sd['offset']:sd['offset'] + size])
+                    tt['m_StreamData'] = {'offset': 0, 'size': 0, 'path': ''}
+                    changed = True
+            data = obj.save_typetree(tt) if changed else obj.get_raw_data()
+            ti = s.types.index(obj.serialized_type)
+            if ti not in tmap:
+                tmap[ti] = _type_index(m, s, obj.serialized_type, fmap)
+            nt = tmap[ti]
+            m.objects[pid] = attrs.evolve(obj, assets_file=m, type_id=nt, serialized_type=m.types[nt], data=data)
+    m.mark_changed()
     return env.file.save(packer=_flags(env))
+
+
+def retarget_externals(data: bytes, mapping) -> bytes:
+    """把包里指向 mapping 里的 CAB 的外部引用改成指向另一个 CAB（被并进去的那个包）。对象编号不变。"""
+    env = UnityPy.load(data)
+    changed = False
+    for f in env.file.files.values():
+        if not hasattr(f, 'externals'):
+            continue
+        for e in f.externals:
+            new = mapping.get(_cab_of(e.path))
+            if new:
+                e.path = f'archive:/{new}/{new}'
+                changed = True
+        if changed:
+            f.mark_changed()
+    return env.file.save(packer=_flags(env)) if changed else data

@@ -514,6 +514,9 @@ function renderPreview() {
   if (ev.evolveFrames && !ev.frameLink) {
     notes.push('进化演出和战斗边框、进化点插图由游戏按同一个编号加载：换进化演出会连带换掉这两项。');
   }
+  if (p.categories.some((c) => c.key === 'model' && c.items.some((it) => it.status === 'merge'))) {
+    notes.push('进化时人物的动作和随动作出现的特效由模型自己播放，归在“主战者模型”里，跟模型一起替换。');
+  }
   if (p.keep && p.keep.length && A && B) {
     notes.push(`另有 ${p.keep.length} 项是「${A.name}」独有、「${B.name}」没有对应的资源，会保持原样。`);
   }
@@ -542,6 +545,7 @@ function renderCatDetail() {
   const st = {
     replace: '',
     native: '<span class="st add">直接用来源原生资源</span>',
+    merge: '<span class="st add">并入模型一起替换</span>',
     skip: '<span class="st">原皮肤无此项，保持原样</span>',
     missing: '<span class="st missing">来源未下载</span>',
     target_missing: '<span class="st missing">原皮肤这项未下载</span>',
