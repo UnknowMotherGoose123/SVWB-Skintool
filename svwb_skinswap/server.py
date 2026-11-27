@@ -25,7 +25,7 @@ from .core import SkinSwapper, detect_game_dirs, find_persistent, game_running, 
 
 APP_ID = 'svwb-skinswap'
 APP_NAME = '影之诗 WB 主战者换皮'
-VERSION = '2.1.3'
+VERSION = '2.1.4'
 PREFERRED_PORT = 47321
 CLS_RANK = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 99: 8, 0: 9}
 # 显式指定 MIME，避免 Windows 注册表把 .js/.css 映射错导致页面加载失败
@@ -866,13 +866,16 @@ def selftest(args):
             t0 = time.time()
             merged = merge_cabs(sw._read_row_file(rows[mb]), [sw._read_row_file(rows[d]) for d in sorted(bound)])
             env = UnityPy.load(merged)
-            linked = []
+            linked, preload = [], set()
             for obj in env.objects:
                 if obj.type.name == 'PlayableDirector':
                     pa = obj.read_typetree()['m_PlayableAsset']
                     linked.append(pa['m_FileID'] == 0 and pa['m_PathID'] in obj.assets_file.objects)
+                elif obj.type.name == 'AssetBundle':
+                    preload = {p['m_PathID'] for p in obj.read_typetree()['m_PreloadTable'] if p['m_FileID'] == 0}
+            unlisted = sum(1 for o in env.objects if o.type.name != 'AssetBundle' and o.path_id not in preload)
             lines.append(f'merge={mb} +{len(bound)} directors={len(linked)} linked={all(linked) and bool(linked)} '
-                         f'{time.time() - t0:.1f}s')
+                         f'unlisted={unlisted} {time.time() - t0:.1f}s')
             break
         # 视频重编码：游戏里找一个 USM，解码几帧再编码成 VP9
         from . import usm

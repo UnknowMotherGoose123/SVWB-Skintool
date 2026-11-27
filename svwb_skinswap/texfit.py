@@ -425,12 +425,13 @@ def merge_cabs(main: bytes, deps) -> bytes:
                 for name, f in denv.file.files.items() if not hasattr(f, 'objects')}
         srcs.append((s, bufs))
     merged = {m.name} | {s.name for s, _ in srcs}
+    ab = next(o for o in m.objects.values() if o.type.name == 'AssetBundle')
 
-    # 1. 主文件里原来指向这些依赖包的引用 → 文件内
+    # 1. 主文件里原来指向这些依赖包的引用 → 文件内（AssetBundle 对象最后单独处理）
     mmap = {i + 1: 0 for i, e in enumerate(m.externals) if _cab_of(e.path) in merged}
     if mmap:
         for obj in list(m.objects.values()):
-            if obj.type.name in _LEAF_TYPES:
+            if obj.type.name in _LEAF_TYPES or obj is ab:
                 continue
             tt = obj.read_typetree()
             if _remap_pptrs(tt, mmap):
@@ -440,11 +441,15 @@ def merge_cabs(main: bytes, deps) -> bytes:
                 ls.local_serialized_file_index = 0
 
     # 2. 依赖包的对象搬进主文件
+    extra_preload = []
     for s, bufs in srcs:
         fmap = {i + 1: (0 if _cab_of(e.path) in merged else _ext_index(m, e)) for i, e in enumerate(s.externals)}
         tmap = {}
         for pid, obj in s.objects.items():
             if obj.type.name == 'AssetBundle':
+                sab = obj.read_typetree()
+                _remap_pptrs(sab['m_PreloadTable'], fmap)
+                extra_preload += sab['m_PreloadTable']
                 continue
             if pid in m.objects:
                 if m.objects[pid].class_id == obj.class_id:
@@ -475,22 +480,25 @@ def merge_cabs(main: bytes, deps) -> bytes:
                 tmap[ti] = _type_index(m, s, obj.serialized_type, fmap)
             nt = tmap[ti]
             m.objects[pid] = attrs.evolve(obj, assets_file=m, type_id=nt, serialized_type=m.types[nt], data=data)
+            extra_preload.append({'m_FileID': 0, 'm_PathID': pid})
+
+    # 3. 主包的预加载表：游戏加载模型时只读表里的对象。原版包里每个对象都在表里，
+    #    并进来的时间轴、特效（连同它们引用的着色器等）也要加进去，覆盖整张表的条目跟着变长
+    t = ab.read_typetree()
+    _remap_pptrs(t, mmap)
+    pre = t['m_PreloadTable']
+    old_len = len(pre)
+    seen = {(p['m_FileID'], p['m_PathID']) for p in pre}
+    for p in extra_preload:
+        k = (p['m_FileID'], p['m_PathID'])
+        if k not in seen and k[1]:
+            seen.add(k)
+            pre.append(dict(p))
+    for _, info in t['m_Container']:
+        if info['preloadIndex'] + info['preloadSize'] == old_len:
+            info['preloadSize'] += len(pre) - old_len
+    gone = {c.lower() for c in merged if c != m.name}
+    t['m_Dependencies'] = [d for d in t.get('m_Dependencies', []) if d.lower() not in gone]
+    ab.save_typetree(t)
     m.mark_changed()
     return env.file.save(packer=_flags(env))
-
-
-def retarget_externals(data: bytes, mapping) -> bytes:
-    """把包里指向 mapping 里的 CAB 的外部引用改成指向另一个 CAB（被并进去的那个包）。对象编号不变。"""
-    env = UnityPy.load(data)
-    changed = False
-    for f in env.file.files.values():
-        if not hasattr(f, 'externals'):
-            continue
-        for e in f.externals:
-            new = mapping.get(_cab_of(e.path))
-            if new:
-                e.path = f'archive:/{new}/{new}'
-                changed = True
-        if changed:
-            f.mark_changed()
-    return env.file.save(packer=_flags(env)) if changed else data

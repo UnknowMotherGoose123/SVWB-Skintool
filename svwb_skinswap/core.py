@@ -141,8 +141,9 @@ FRAME_PARTS = ('battle_ui', 'evo_point')
 # 替换逻辑的版本：改法变了就加一，已替换过的方案会被提示/自动重新替换
 #   2：战斗边框/立绘摆放（只比主数据）
 #   3：模型自带的进化时间轴/特效改为并进模型主文件（旧版单独塞进包里，游戏找不到）
-APPLY_LOGIC = 3
-MERGE_LOGIC = 3
+#   4：并进来的对象补进模型包的预加载表（v2.1.3 漏了，游戏里时间轴建不起来）
+APPLY_LOGIC = 4
+MERGE_LOGIC = 4
 
 
 def is_special(row):
@@ -472,7 +473,7 @@ BACKUP_DIRNAME = 'backup'
 from .usm import Cancelled, _check  # noqa: E402,F401  后台预计算的取消信号
 
 
-FIT_CACHE_VER = 'fit-2026.11.26-1'      # 处理算法有变化时改这里，让旧缓存失效
+FIT_CACHE_VER = 'fit-2026.11.27-1'      # 处理算法有变化时改这里，让旧缓存失效
 FIT_CACHE_LIMIT = 3 * 1024 ** 3          # 结果缓存最多占 3GB，超出删最久没用的
 
 
