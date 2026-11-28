@@ -1,5 +1,6 @@
 """纹理相关的“放得下”处理：
-  * repaint_bundle：把来源包的画面缩放后，按原格式/尺寸/mipmap 写进目标包自己的纹理（包结构完全不变）
+  * repaint_bundle：把来源包的画面缩放后按原格式写进目标包自己的纹理，Sprite 区域/网格换成来源的；
+    放不下时降分辨率（Sprite 一起换算，显示大小不变）
   * shrink_bundle：按比例缩小包里的纹理（Spine 图集用归一化坐标，缩小纹理不影响动画定位）
   * merge_cabs：把依赖包（进化时间轴、时间轴里生成的特效）的对象并进主包的主文件，随主包一起加载
 """
@@ -233,9 +234,125 @@ def posterize(img: Image.Image, bits: int, pma: bool = False) -> Image.Image:
     return clamp_premultiplied(out) if pma else out
 
 
-def repaint_bundle(data_a: bytes, data_b: bytes, bits: int = 0) -> bytes:
-    """来源画面写进目标包（目标包的名字、CAB、Sprite、尺寸、格式、mipmap 全不变）。失败抛异常。
-    bits > 0 时对画面做色阶量化（用于放不进原文件的情况）。"""
+_VFMT_SIZE = {0: 4, 1: 2, 2: 1, 3: 1, 4: 2, 5: 2, 6: 1, 7: 1, 8: 2, 9: 2, 10: 4, 11: 4}
+
+
+def _sprites_by_texture(env):
+    """{纹理 path_id: [Sprite 对象]}（只看文件内引用）。"""
+    out = {}
+    for o in env.objects:
+        if o.type.name != 'Sprite':
+            continue
+        tex = o.read_typetree()['m_RD']['texture']
+        if tex['m_FileID'] == 0:
+            out.setdefault(tex['m_PathID'], []).append(o)
+    return out
+
+
+def _scale_positions(vd, kx, ky):
+    """按比例缩放 Sprite 网格顶点坐标（位置通道必须是 float32），返回新的顶点数据；看不懂布局返回 None。"""
+    chans = vd['m_Channels']
+    n = vd['m_VertexCount']
+    raw = bytearray(vd['m_DataSize'])
+    if not chans or chans[0]['dimension'] < 2 or chans[0]['format'] != 0:
+        return None
+    strides = {}
+    for c in chans:
+        if c['dimension']:
+            size = _VFMT_SIZE.get(c['format'])
+            if size is None:
+                return None
+            strides[c['stream']] = max(strides.get(c['stream'], 0), c['offset'] + size * c['dimension'])
+    starts, pos = {}, 0
+    for st in sorted(strides):
+        pos = (pos + 15) // 16 * 16
+        starts[st] = pos
+        pos += strides[st] * n
+    if pos > len(raw) or len(raw) - pos >= 16:
+        return None
+    p = chans[0]
+    for i in range(n):
+        off = starts[p['stream']] + i * strides[p['stream']] + p['offset']
+        x, y = struct.unpack_from('<2f', raw, off)
+        struct.pack_into('<2f', raw, off, x * kx, y * ky)
+    return bytes(raw)
+
+
+def _transplant_sprite(tt_a, tt_b, src_wh, new_wh, old_wh):
+    """把来源 Sprite 的区域/网格（来源纹理尺寸 src_wh）换算到目标纹理的新尺寸 new_wh 上，
+    写进目标 Sprite（名字、纹理引用、渲染键等身份信息不动；显示的单位尺寸保持目标原来的）。不支持返回 None。"""
+    rd_a, rd_b = tt_a['m_RD'], tt_b['m_RD']
+    if tt_a['m_SpriteAtlas']['m_PathID'] or tt_b['m_SpriteAtlas']['m_PathID'] or \
+            rd_a['alphaTexture']['m_PathID'] or rd_b['alphaTexture']['m_PathID'] or \
+            rd_a.get('secondaryTextures') or rd_b.get('secondaryTextures') or rd_b.get('m_Bindpose'):
+        return None
+    sx, sy = new_wh[0] / src_wh[0], new_wh[1] / src_wh[1]
+    ppu = tt_a['m_PixelsToUnits'] * new_wh[0] / old_wh[0]
+    kx, ky = tt_b['m_PixelsToUnits'] * sx / ppu, tt_b['m_PixelsToUnits'] * sy / ppu
+    vd = copy.deepcopy(rd_b['m_VertexData'])
+    if (kx, ky) != (1.0, 1.0):
+        data = _scale_positions(vd, kx, ky)
+        if data is None:
+            return None
+        vd['m_DataSize'] = data if isinstance(vd['m_DataSize'], (bytes, bytearray)) else list(data)
+
+    def rect(r):
+        return {**r, 'x': r['x'] * sx, 'y': r['y'] * sy, 'width': r['width'] * sx, 'height': r['height'] * sy}
+
+    out = copy.deepcopy(tt_a)
+    for k in ('m_Pivot', 'm_Extrude', 'm_IsPolygon'):
+        if k in tt_b:
+            out[k] = copy.deepcopy(tt_b[k])
+    out['m_Rect'] = rect(tt_b['m_Rect'])
+    out['m_Offset'] = {'x': tt_b['m_Offset']['x'] * sx, 'y': tt_b['m_Offset']['y'] * sy}
+    b = tt_b['m_Border']
+    out['m_Border'] = {'x': b['x'] * sx, 'y': b['y'] * sy, 'z': b['z'] * sx, 'w': b['w'] * sy}
+    out['m_PixelsToUnits'] = ppu
+    out['m_PhysicsShape'] = [[{'x': v['x'] * kx, 'y': v['y'] * ky} for v in shape] for shape in tt_b.get('m_PhysicsShape', [])]
+    ra = out['m_RD']
+    for k in ('m_SubMeshes', 'm_IndexBuffer', 'settingsRaw', 'atlasRectOffset', 'downscaleMultiplier'):
+        if k in rd_b:
+            ra[k] = copy.deepcopy(rd_b[k])
+    ra['m_VertexData'] = vd
+    ra['textureRect'] = rect(rd_b['textureRect'])
+    ra['textureRectOffset'] = {'x': rd_b['textureRectOffset']['x'] * sx, 'y': rd_b['textureRectOffset']['y'] * sy}
+    ut = rd_b['uvTransform']
+    ra['uvTransform'] = {'x': ppu, 'y': ut['y'] * sx, 'z': ppu, 'w': ut['w'] * sy}
+    return out
+
+
+def _sprite_pairs(env_a, env_b, t, s):
+    """目标纹理 t 和来源纹理 s 各自唯一的 Sprite；不是一对一返回 None。"""
+    sa = _sprites_by_texture(env_a).get(t.object_reader.path_id, [])
+    sb = _sprites_by_texture(env_b).get(s.object_reader.path_id, [])
+    return (sa[0], sb[0]) if len(sa) == 1 and len(sb) == 1 else None
+
+
+def can_resize(data_a: bytes, data_b: bytes) -> bool:
+    """目标包里每张要重绘的纹理都只被一个 Sprite 使用、并且能换算 Sprite：可以降分辨率放进原文件。"""
+    try:
+        env_a, env_b = UnityPy.load(data_a), UnityPy.load(data_b)
+        ta = sorted([o.read() for o in env_a.objects if o.type.name == 'Texture2D'], key=lambda t: t.m_Name)
+        tb = sorted([o.read() for o in env_b.objects if o.type.name == 'Texture2D'], key=lambda t: t.m_Name)
+        ok = False
+        for t, s in _pair_textures(ta, tb):
+            if s is None:
+                continue
+            pr = _sprite_pairs(env_a, env_b, t, s)
+            if not pr or _transplant_sprite(pr[0].read_typetree(), pr[1].read_typetree(), (s.m_Width, s.m_Height),
+                                            (t.m_Width // 2, t.m_Height // 2), (t.m_Width, t.m_Height)) is None:
+                return False
+            ok = True
+        return ok
+    except Exception:
+        return False
+
+
+def repaint_bundle(data_a: bytes, data_b: bytes, bits: int = 0, scale: float = 1.0) -> bytes:
+    """来源画面写进目标包（目标包的名字、CAB、格式不变）。失败抛异常。
+    纹理只被一个 Sprite 使用时，Sprite 的区域/网格换成来源的（换算到目标纹理上），来源人物不会被原皮肤的轮廓裁掉；
+    scale < 1 时纹理按比例降分辨率（Sprite 一起换算，游戏里显示大小不变），用于放不进原文件的情况；
+    bits > 0 时对画面做色阶量化（最后的手段，会出现色块）。"""
     env_a = UnityPy.load(data_a)
     env_b = UnityPy.load(data_b)
     ta = sorted([o.read() for o in env_a.objects if o.type.name == 'Texture2D'], key=lambda t: t.m_Name)
@@ -243,18 +360,50 @@ def repaint_bundle(data_a: bytes, data_b: bytes, bits: int = 0) -> bytes:
     if not ta or not tb:
         raise ValueError('没有纹理')
     bufs = _resS_bufs(env_a)
+    resized = False
     for t, s in _pair_textures(ta, tb):
         if s is None:
             continue
+        w, h = t.m_Width, t.m_Height
+        pr = _sprite_pairs(env_a, env_b, t, s)
+        if scale < 1:
+            w = max(4, int(round(t.m_Width * scale / 4)) * 4)
+            h = max(4, int(round(t.m_Height * scale / 4)) * 4)
+        sp = None
+        if pr:
+            sp = _transplant_sprite(pr[0].read_typetree(), pr[1].read_typetree(), (s.m_Width, s.m_Height),
+                                    (w, h), (t.m_Width, t.m_Height))
+        if sp is None:
+            w, h = t.m_Width, t.m_Height      # Sprite 换算不了：尺寸保持原样
         img = s.image.convert('RGBA')
         pma = is_premultiplied(img)
-        img = resize_rgba(img, (t.m_Width, t.m_Height), pma)
+        img = resize_rgba(img, (w, h), pma)
         if bits:
             img = posterize(img, bits, pma)
         mips = t.m_MipCount or 1
-        new = _encode(img, t.m_TextureFormat, t.m_Width, t.m_Height, mips, pma)
+        if mips > 1 and (w, h) != (t.m_Width, t.m_Height):
+            mips = min(mips, int(math.log2(max(w, h))) + 1)     # Unity 的完整 mip 链按长边算
+        new = _encode(img, t.m_TextureFormat, w, h, mips, pma)
+        if sp is not None:
+            pr[0].save_typetree(sp)
         sd = t.m_StreamData
-        if sd and sd.path and sd.size:
+        if (w, h) != (t.m_Width, t.m_Height):
+            resized = True
+            t.m_Width, t.m_Height = w, h
+            if t.m_MipCount is not None:
+                t.m_MipCount = mips
+            t.m_CompleteImageSize = len(new)
+            if sd and sd.path and sd.size:
+                node = _node_name(sd.path)
+                if node not in bufs:
+                    raise ValueError(f'找不到纹理数据 {sd.path}')
+                bufs[node] += b'\x00' * (-len(bufs[node]) % 16)
+                sd.offset, sd.size = len(bufs[node]), len(new)
+                bufs[node] += new
+            else:
+                t.image_data = new
+            t.save()
+        elif sd and sd.path and sd.size:
             node = _node_name(sd.path)
             if node not in bufs or len(new) != sd.size:
                 raise ValueError(f'纹理数据长度不一致 {len(new)} != {sd.size}')
@@ -264,8 +413,46 @@ def repaint_bundle(data_a: bytes, data_b: bytes, bits: int = 0) -> bytes:
                 raise ValueError('内嵌纹理长度不一致')
             t.image_data = new
             t.save()
+    if resized:
+        bufs = _compact_resS(env_a, bufs, ta)
     _put_resS(env_a, bufs)
     return env_a.file.save(packer=_flags(env_a))
+
+
+def _compact_resS(env, bufs, texs):
+    """去掉 .resS 里没人引用的旧数据（降分辨率后旧纹理数据留在原处），所有引用按新位置更新。
+    texs：包里全部纹理（已改过的对象；UnityPy 保存后再读出来还是旧内容，所以不能重新读）。"""
+    new_bufs = {name: bytearray() for name in bufs}
+    for t in texs:
+        sd = t.m_StreamData
+        if sd and sd.path and sd.size:
+            node = _node_name(sd.path)
+            buf = new_bufs[node]
+            buf += b'\x00' * (-len(buf) % 16)
+            blob = bytes(bufs[node][sd.offset:sd.offset + sd.size])
+            sd.offset = len(buf)
+            buf += blob
+            t.save()
+    for o in env.objects:
+        if o.type.name in ('AssetBundle', 'Texture2D', 'Sprite'):
+            continue
+        try:
+            tt = o.read_typetree()
+        except Exception:
+            continue
+        sd = tt.get('m_StreamData') if isinstance(tt, dict) else None
+        if not isinstance(sd, dict) or not sd.get('size'):
+            continue
+        node = _node_name(sd.get('path', ''))
+        if node not in bufs:
+            raise ValueError(f'{o.type.name} 引用了未知的外部数据 {node}')
+        buf = new_bufs[node]
+        buf += b'\x00' * (-len(buf) % 16)
+        blob = bytes(bufs[node][sd['offset']:sd['offset'] + sd['size']])
+        sd['offset'] = len(buf)
+        buf += blob
+        o.save_typetree(tt)
+    return new_bufs
 
 
 def shrink_bundle(data: bytes, scale: float) -> bytes:

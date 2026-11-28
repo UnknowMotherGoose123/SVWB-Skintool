@@ -123,6 +123,7 @@ function onState(st) {
   const sig = JSON.stringify([st.plan, st.applied, st.dirty]);
   if (sig !== S.planSig) { S.planSig = sig; renderPlan(); renderGrid(); }
   renderActions(st);
+  renderCardArt(st);
   renderTask(st.task);
 
   if (st.logSeq !== S.logSeq) loadLogs();
@@ -612,7 +613,8 @@ function renderActions(st) {
   const blocked = !st.game.ok || !!st.game.running || busy || !!(st.meta && st.meta.broken);
   const btn = $('#btnApply');
   const txt = $('#applyText');
-  const planN = st.plan.length, appliedN = st.applied.length;
+  const planN = st.plan.length + (st.cardArt || []).length;
+  const appliedN = st.applied.length + (st.cardArtApplied || []).length;
   let label = '一键替换', disabled = blocked;
   if (!planN && !appliedN) { disabled = true; btn.title = '先在上方选好两侧皮肤并加入方案'; }
   else if (!planN && appliedN) { label = '应用（撤销全部替换）'; btn.title = ''; }
@@ -640,8 +642,56 @@ function renderTask(task) {
 async function doApply() {
   const st = S.state;
   if (!st) return;
-  if (!st.plan.length && st.applied.length) { openConfirm(); return; }
+  const art = (st.cardArt || []).length, artApplied = (st.cardArtApplied || []).length;
+  if (!st.plan.length && !art && (st.applied.length || artApplied)) { openConfirm(); return; }
   try { onState(await api('/api/apply', {})); } catch (e) { fail(e); }
+}
+
+/* ------------------------------------------------------------------ 卡面异画 */
+function renderCardArt(st) {
+  const sel = [...(st.cardArt || [])].sort(), done = [...(st.cardArtApplied || [])].sort();
+  const sum = $('#cardArtSum');
+  if (!sel.length && !done.length) sum.textContent = '把普通卡显示成带动画的高级异画';
+  else if (JSON.stringify(sel) === JSON.stringify(done)) sum.innerHTML = `<span class="on">${sel.length} 张已生效</span>`;
+  else if (!sel.length) sum.innerHTML = '已全部取消 · 点「一键替换」恢复原卡面';
+  else sum.innerHTML = `<span class="on">已选 ${sel.length} 张</span> · 点「一键替换」生效`;
+  $('#btnCardArt').disabled = !st.game.ok || !!st.task;
+}
+
+async function openCards() {
+  S.cardSel = new Set((S.state && S.state.cardArt) || []);
+  $('#cardSearch').value = '';
+  $('#cardOverlay').hidden = false;
+  if (!S.cards) {
+    try { S.cards = (await api('/api/cards')).cards; } catch (e) { closeCards(); fail(e); return; }
+  }
+  renderCards();
+  $('#cardSearch').focus();
+}
+function closeCards() { $('#cardOverlay').hidden = true; }
+
+function renderCards() {
+  const q = $('#cardSearch').value.trim();
+  const all = S.cards || [];
+  const list = all.filter((c) => !q || c.name.includes(q) || String(c.id).includes(q));
+  $('#cardList').innerHTML = list.length ? list.map((c) => {
+    const on = S.cardSel.has(c.id);
+    const tip = c.downloaded ? '' : '这张卡的异画资源还没下载：先在游戏里打开一次这张卡的异画（商店/收藏），再回来勾选';
+    return `<label class="card-item${on ? ' on' : ''}${c.downloaded ? '' : ' off'}" title="${esc(tip)}">
+      <input type="checkbox" data-id="${c.id}"${on ? ' checked' : ''}${c.downloaded ? '' : ' disabled'}>
+      <img src="/img/card/${c.id}" alt="" loading="lazy" onerror="this.style.visibility='hidden'">
+      <span class="nm">${esc(c.name)}<small>#${c.id}</small></span>
+    </label>`;
+  }).join('') : '<div class="plan-empty">没有找到这张卡</div>';
+  $('#cardCount').textContent = `已选 ${S.cardSel.size} / ${all.length}`;
+}
+
+async function saveCards() {
+  try {
+    onState(await api('/api/card_art', { ids: [...S.cardSel] }));
+    closeCards();
+    toast('ok', '已保存卡面设置', S.cardSel.size ? `${S.cardSel.size} 张卡会显示成动态异画。点「一键替换」生效。` : '点「一键替换」恢复原卡面。');
+  } catch (e) { fail(e); }
 }
 
 /* ------------------------------------------------------------------ 工具新版本 */
@@ -892,6 +942,18 @@ function bind() {
   $('#btnRevert').addEventListener('click', openConfirm);
   $('#confirmNo').addEventListener('click', closeConfirm);
   $('#confirmYes').addEventListener('click', doRevert);
+  $('#btnCardArt').addEventListener('click', openCards);
+  $('#cardCancel').addEventListener('click', closeCards);
+  $('#cardSave').addEventListener('click', saveCards);
+  $('#cardClear').addEventListener('click', () => { S.cardSel = new Set(); renderCards(); });
+  $('#cardSearch').addEventListener('input', renderCards);
+  $('#cardList').addEventListener('change', (e) => {
+    const id = Number(e.target.dataset.id);
+    if (!id) return;
+    if (e.target.checked) S.cardSel.add(id); else S.cardSel.delete(id);
+    e.target.closest('.card-item').classList.toggle('on', e.target.checked);
+    $('#cardCount').textContent = `已选 ${S.cardSel.size} / ${(S.cards || []).length}`;
+  });
   $('#btnCheck').addEventListener('click', doCheck);
   $('#verChip').addEventListener('click', onVersionClick);
   $('#autoRescan').addEventListener('change', async (e) => {
@@ -916,7 +978,8 @@ function bind() {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      if (!$('#confirmOverlay').hidden) closeConfirm();
+      if (!$('#cardOverlay').hidden) closeCards();
+      else if (!$('#confirmOverlay').hidden) closeConfirm();
       else if (!$('#dirOverlay').hidden) closeDir();
       else if (!$('#logDrawer').hidden) toggleLog(false);
       return;

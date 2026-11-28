@@ -25,7 +25,7 @@ from .core import SkinSwapper, detect_game_dirs, find_persistent, game_running, 
 
 APP_ID = 'svwb-skinswap'
 APP_NAME = '影之诗 WB 主战者换皮'
-VERSION = '2.1.4'
+VERSION = '2.1.5'
 PREFERRED_PORT = 47321
 CLS_RANK = {1: 1, 2: 2, 3: 3, 4: 4, 5: 5, 6: 6, 7: 7, 99: 8, 0: 9}
 # 显式指定 MIME，避免 Windows 注册表把 .js/.css 映射错导致页面加载失败
@@ -186,7 +186,10 @@ class Backend:
                 'applied': [self._plan_item(x) for x in swap_list(applied)],
                 'parts': PART_KEYS,
                 'dirty': (sorted(swap_list(plan), key=repr) != sorted(swap_list(applied), key=repr)
+                          or sorted(self._card_art()) != sorted(self._card_art_applied())
                           or bool(self.sw and not self.demo and self.sw.logic_stale())),
+                'cardArt': self._card_art(),
+                'cardArtApplied': self._card_art_applied(),
                 'skins': {'ver': self.skins_ver, 'loading': self.loading, 'count': len(self.skins)},
                 'task': dict(self.task) if self.task else None,
                 'result': self.result,
@@ -247,6 +250,7 @@ class Backend:
         if self.task:
             raise ApiError('正在执行：' + self.task['label'] + '，完成后再更换目录', 409)
         sw = SkinSwapper(path, self.data_dir, log=lambda m: self.log(m))
+        sw.card_art = [int(c) for c in self.cfg.get('card_art') or []]
         with self.lock:
             self.sw = sw
             self.game_error = None
@@ -376,6 +380,32 @@ class Backend:
         self._kick_precompute(swaps)
         return self.state()
 
+    def _card_art(self):
+        return [int(c) for c in self.cfg.get('card_art') or []]
+
+    def _card_art_applied(self):
+        return [int(c) for c in (self.sw.state.get('card_art') or [])] if self.sw and not self.demo else []
+
+    def cards_payload(self):
+        """可以换成动态异画的卡（主数据改了才重新读）。"""
+        if not self.sw or self.demo:
+            return {'cards': []}
+        try:
+            return {'cards': self.sw.card_art_list()}
+        except Exception as ex:
+            raise ApiError(f'读取卡牌数据失败：{ex}')
+
+    def set_card_art(self, ids):
+        if not isinstance(ids, list):
+            raise ApiError('ids 必须是列表')
+        ids = sorted({int(x) for x in ids if str(x).isdigit()})
+        with self.lock:
+            self.cfg['card_art'] = ids
+            self._save_cfg()
+            if self.sw:
+                self.sw.card_art = ids
+        return self.state()
+
     def _kick_precompute(self, swaps):
         """选好方案就在后台预先算好（结果进缓存），点“一键替换”时只剩写文件。"""
         if self.demo or not self.sw or not swaps:
@@ -479,10 +509,11 @@ class Backend:
         self._require_game()
         self._require_idle()
         swaps = [tuple(s) for s in self.cfg.get('swaps', [])]
-        if not swaps:
+        if not swaps and not self.cfg.get('card_art'):
             return self._start_task('revert', '还原', self._do_revert)
-        self.log('开始替换：' + '，'.join(f'{self._name(a)} → {self._name(b)}' + ('' if parts is None else f'（只替换 {len(parts)} 部分）')
-                                         for a, b, parts in swap_list(swaps)), 'info')
+        art = self._card_art()
+        self.log('开始替换：' + '，'.join([f'{self._name(a)} → {self._name(b)}' + ('' if parts is None else f'（只替换 {len(parts)} 部分）')
+                                          for a, b, parts in swap_list(swaps)] + ([f'卡面异画 {len(art)} 张'] if art else [])), 'info')
         return self._start_task('apply', '替换', lambda: self._do_apply(swaps))
 
     def revert(self, clear_plan=True):
@@ -491,6 +522,9 @@ class Backend:
         if clear_plan:
             with self.lock:
                 self.cfg['swaps'] = []
+                self.cfg['card_art'] = []
+                if self.sw:
+                    self.sw.card_art = []
                 self._save_cfg()
         return self._start_task('revert', '还原', self._do_revert)
 
@@ -498,7 +532,7 @@ class Backend:
         if self.demo:
             need = sorted(map(list, swaps)) != sorted(self.demo_applied)
             return need, ('替换方案有变化' if need else '没有变化')
-        if not swaps and not self._applied():
+        if not swaps and not self.cfg.get('card_art') and not self._applied():
             return False, '没有设置替换'
         return self.sw.needs_update(swaps)
 
@@ -665,6 +699,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self._json(b.state())
                 if path == '/api/skins':
                     return self._json(b.skins_payload())
+                if path == '/api/cards':
+                    return self._json(b.cards_payload())
                 if path == '/api/log':
                     return self._json(b.logs_after(int((qs.get('after') or ['0'])[0] or 0)))
                 if path == '/api/preview':
@@ -733,6 +769,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(b.set_plan(body.get('plan')))
             if path == '/api/options':
                 return self._json(b.set_options(body))
+            if path == '/api/card_art':
+                return self._json(b.set_card_art(body.get('ids')))
             if path == '/api/apply':
                 return self._json(b.apply())
             if path == '/api/revert':
@@ -877,6 +915,20 @@ def selftest(args):
             lines.append(f'merge={mb} +{len(bound)} directors={len(linked)} linked={all(linked) and bool(linked)} '
                          f'unlisted={unlisted} {time.time() - t0:.1f}s')
             break
+        # 卡面异画：改主数据后放得下，普通卡指向异画资源
+        from .core import MASTER_NAME, MasterMemory, fit_size
+        cards = sw.card_art_list()
+        if cards:
+            mrow = rows[MASTER_NAME]
+            sw.card_art = [cards[0]['id']]
+            mout, _, n_card = sw._rewrite_master(sw._read_orig(mrow), [])
+            sw.card_art = []
+            cm = {r[0]: r for r in MasterMemory(mout).table('CardMaster')}
+            from . import hotfix
+            mp = {r[0]: r[1] for r in MasterMemory(mout).table('StarterCardIdMapper')}
+            lines.append(f'cardart={len(cards)} first={cards[0]["id"]} foil={cm[cards[0]["id"]][5]} '
+                         f'map={mp.get(cards[0]["id"])} fits={fit_size("master", mout, mrow["l"]) is not None} '
+                         f'code={[s["state"] for s in hotfix.status(sw.data_dir)]}')
         # 视频重编码：游戏里找一个 USM，解码几帧再编码成 VP9
         from . import usm
         import av

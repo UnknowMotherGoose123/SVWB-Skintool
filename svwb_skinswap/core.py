@@ -25,7 +25,7 @@ import UnityPy  # noqa: E402
 import math  # noqa: E402
 
 from .crypto import xor_file, checksum  # noqa: E402
-from .texfit import repaint_bundle, shrink_bundle, merge_cabs, has_textures, shutdown_pool  # noqa: E402
+from .texfit import repaint_bundle, shrink_bundle, merge_cabs, has_textures, can_resize, shutdown_pool  # noqa: E402
 from concurrent.futures import ThreadPoolExecutor  # noqa: E402
 import threading  # noqa: E402
 from .texfit import estimate_lzma_size  # noqa: E402
@@ -33,6 +33,7 @@ from .master import MasterMemory  # noqa: E402
 from . import wwise  # noqa: E402
 from . import spine  # noqa: E402
 from . import usm  # noqa: E402
+from . import hotfix  # noqa: E402
 
 UnityPy.config.FALLBACK_UNITY_VERSION = "2022.3.0f1"
 
@@ -121,6 +122,7 @@ IMAGE_KINDS = {
     'evosuper': [('UI/LeaderSkinFrame/utx_base_btl_evo_frame_{id}_super_active', None)],
     'deck': [('UI/Deck/utx_tex_deck_set_leader_{id}_char', None)],
     'header': [('Card/Header/log_leader_{id}', None)],
+    'card': [('Card/Header/log_{id}0', None)],                 # 卡牌在卡组列表里的横条图（普通卡 ID）
 }
 
 
@@ -142,8 +144,10 @@ FRAME_PARTS = ('battle_ui', 'evo_point')
 #   2：战斗边框/立绘摆放（只比主数据）
 #   3：模型自带的进化时间轴/特效改为并进模型主文件（旧版单独塞进包里，游戏找不到）
 #   4：并进来的对象补进模型包的预加载表（v2.1.3 漏了，游戏里时间轴建不起来）
-APPLY_LOGIC = 4
+#   5：图片 Sprite 区域/网格跟着来源换；放不下先降分辨率（旧版降颜色精度，卡面出色块）
+APPLY_LOGIC = 5
 MERGE_LOGIC = 4
+IMAGE_LOGIC = 5
 
 
 def is_special(row):
@@ -473,7 +477,7 @@ BACKUP_DIRNAME = 'backup'
 from .usm import Cancelled, _check  # noqa: E402,F401  后台预计算的取消信号
 
 
-FIT_CACHE_VER = 'fit-2026.11.27-1'      # 处理算法有变化时改这里，让旧缓存失效
+FIT_CACHE_VER = 'fit-2026.11.28-1'      # 处理算法有变化时改这里，让旧缓存失效
 FIT_CACHE_LIMIT = 3 * 1024 ** 3          # 结果缓存最多占 3GB，超出删最久没用的
 
 
@@ -501,6 +505,7 @@ class SkinSwapper:
         self.persist = find_persistent(game_dir)
         if not self.persist:
             raise FileNotFoundError('在该目录下没有找到 Persistent/meta，请选择影之诗的安装目录')
+        self.data_dir = os.path.dirname(self.persist)     # …_Data（热更新代码在它下面的 StreamingAssets）
         self.meta = os.path.join(self.persist, 'meta')
         self.dat = os.path.join(self.persist, 'dat')
         self.log = log
@@ -512,6 +517,7 @@ class SkinSwapper:
         self._io_lock = threading.RLock()      # 读写游戏文件互斥：替换/还原 与 后台预计算 不能同时进行
         self._pre_lock = threading.Lock()
         self._pre = None
+        self.card_art = []                      # 卡面换成动态异画的卡（普通卡 ID），见 _rewrite_cards
         self.state = self._load_state()
 
     # ------------------------------------------------------------ state
@@ -619,7 +625,9 @@ class SkinSwapper:
         try:
             swaps = swap_list(applied)
             deps = self._deps()
-            if (self.state.get('logic') or 0) < MERGE_LOGIC and any(
+            if (self.state.get('logic') or 0) < IMAGE_LOGIC:
+                pass                       # 图片（卡面、立绘等）的写法变了，所有方案都要重做
+            elif (self.state.get('logic') or 0) < MERGE_LOGIC and any(
                     wants(parts, 'model') and model_bound(rows, deps, b)[0]
                     and rep(f'Prefabs/LeaderSkin/class_{b}', b, a) in rows for a, b, parts in swaps):
                 pass                       # 模型带进化时间轴/特效的组合：旧版做法游戏加载不到，要重做
@@ -870,6 +878,8 @@ class SkinSwapper:
                 skipped += 1
             if os.path.exists(bp):
                 os.remove(bp)
+        if self.state.get('hotfix'):
+            reverted += hotfix.revert(self.state['hotfix'])
         self.state = {'engine': 'inplace', 'files': {}, 'applied': []}
         self._save_state()
         return reverted, skipped
@@ -927,14 +937,24 @@ class SkinSwapper:
                         files[mrow['h']] = (MASTER_NAME, xor_file(fitted, mrow['e']))
                         stats['labels'] = n_labels
                         stats['evolve'] = n_evo
-                        if n_evo:
+                        if n_evo and swaps:
                             report.append('主数据：已让原皮肤按来源皮肤的方式加载进化演出/战斗边框/进化点插图，并同步立绘摆放位置')
+                        if self.card_art:
+                            report.append(f'卡面：{len(self.card_art)} 张卡显示成动态异画（普通版和闪卡版都换）')
 
         # 写入：先备份原文件，再原子替换
         if progress:
             progress(total - 1, total, '写入游戏文件…')
         written = {}
+        code_rec = {}
         try:
+            if self.card_art and MASTER_NAME in {n for n, _ in files.values()}:
+                # 卡面异画的人物动画按卡 ID 加载：改游戏代码让普通卡按主数据里的映射去找异画的动画
+                code_rec, bad = hotfix.apply(self.data_dir)
+                for p, why in bad:
+                    report.append(f'卡面异画：认不出游戏代码 {p}（{why}），这份没改，异画人物可能不显示')
+                if code_rec:
+                    report.append(f'卡面异画：已修改游戏代码 {len(code_rec)} 份（让普通卡也加载异画的人物动画）')
             for h, (name, enc) in files.items():
                 p, bp = self._path(h), self._backup_path(h)
                 if not os.path.exists(bp):
@@ -946,6 +966,9 @@ class SkinSwapper:
                 written[h] = {'name': name, 'new': sha1(enc)}
         finally:
             self.state = {'engine': 'inplace', 'files': written, 'applied': [swap_record(*s) for s in swaps],
+                          'card_art': [int(c) for c in self.card_art] if MASTER_NAME in
+                          {v['name'] for v in written.values()} else [],
+                          'hotfix': code_rec,
                           'logic': APPLY_LOGIC, 'time': time.time()}
             self._save_state()
         stats['changed'] = sum(1 for v in written.values() if v['name'] != MASTER_NAME)
@@ -1138,12 +1161,24 @@ class SkinSwapper:
                 if data_a and data_a[:7] == b'UnityFS' and is_image and has_textures(data) and has_textures(data_a):
                     # 图片类包：把来源画面写进原皮肤自己的纹理（尺寸/格式/Sprite 区域都不变）
                     try:
-                        for bits in (0, 6, 5, 4, 3, 2):
+                        full = repaint_bundle(data_a, data)
+                        fitted = fit_size('bundle', full, dst['l'])
+                        if fitted is None and can_resize(data_a, data):
+                            # 放不下：降分辨率（Sprite 跟着换算，显示大小不变），比降颜色精度出色块好得多。
+                            # 压缩后大小大致跟像素数成正比，按差多少估一个起点
+                            packed = min(len(full), len(UnityPy.load(full).file.save(packer='lzma')))
+                            s = min(0.95, (dst['l'] / packed) ** 0.5 * 0.97)
+                            while fitted is None and s >= 0.35:
+                                fitted = fit_size('bundle', repaint_bundle(data_a, data, 0, s), dst['l'])
+                                if fitted is not None:
+                                    notes.append(f'{short(na)}：分辨率降到 {round(s * 100)}% 以放进原文件（游戏里显示大小不变）')
+                                s *= 0.9
+                        for bits in (6, 5, 4, 3, 2):
+                            if fitted is not None:
+                                break
                             fitted = fit_size('bundle', repaint_bundle(data_a, data, bits), dst['l'])
                             if fitted is not None:
-                                if bits:
-                                    notes.append(f'{short(na)}：颜色精度降到每通道 {bits} 位以放进原文件')
-                                break
+                                notes.append(f'{short(na)}：颜色精度降到每通道 {bits} 位以放进原文件')
                         repainted = True
                     except Exception as ex:
                         notes.append(f'重绘失败，改用整包替换：{short(na)}（{ex}）')
@@ -1305,9 +1340,72 @@ class SkinSwapper:
             if changed:
                 mm.set_table(table, sorted(by.values(), key=lambda r: r[0]), high=True)
                 n_tf += 1
-        if not n and not n_evo and not n_tf:
+        n_card = self._rewrite_cards(mm)
+        if not n and not n_evo and not n_tf and not n_card:
             return mdata, 0, 0
-        return mm.build(), n, n_evo + n_tf
+        return mm.build(), n, n_evo + n_tf + n_card
+
+    def card_art_list(self):
+        """可以换成动态异画的卡：[{id: 普通卡 ID, hp: 高级异画卡 ID, name}]。"""
+        rows = self._rows()
+        mrow = rows.get(MASTER_NAME)
+        data = self._read_orig(mrow) if mrow else None
+        if not data:
+            return []
+        mm = MasterMemory(data)
+        cm = {r[0]: r for r in mm.table('CardMaster')}
+        lab = {r[0]: r[1] for r in mm.table('MasterTextLabel')}
+        out = []
+        for r in mm.table('HighPremiumCard'):
+            hp = cm.get(r[0])
+            if not hp or hp[5] != 2 or hp[8] != hp[0]:
+                continue                                 # 只列真正的异画卡（不列本工具复制出来的普通卡行）
+            base = hp[6]
+            res = str(hp[2])
+            ok = all(self._file_ok(rows[n]) for n in (f'Card/Materials/{res}_2_M', f'Prefabs/Foil/{res}') if n in rows)
+            out.append({'id': base, 'hp': hp[0], 'name': lab.get(f'CN_{base}') or r[1], 'downloaded': ok})
+        return out
+
+    def _rewrite_cards(self, mm):
+        """把 card_art 里的卡（普通版和闪卡版）显示成它的动态异画：
+        CardMaster 的卡面资源指向异画的资源、FoilType 设成 2（游戏按它走异画的材质和 Spine 动画），
+        HighPremiumCard 里给这两张卡复制一份异画的动画缩放/位置。卡的 ID 不变，拥有/对战数据不受影响。"""
+        if not self.card_art:
+            return 0
+        cmt = mm.table('CardMaster')
+        by = {r[0]: r for r in cmt}
+        hpt = mm.table('HighPremiumCard')
+        hpby = {r[0]: r for r in hpt}
+        # 人物动画按卡 ID 加载（Prefabs/Foil/{卡ID}{0|1}）：StarterCardIdMapper 加“普通卡 → 异画卡”，
+        # 配合 hotfix.py 的代码补丁，各界面找动画时都换成异画卡的 ID
+        mpt = mm.table('StarterCardIdMapper')
+        mpby = {r[0]: r for r in mpt}
+        n = 0
+        for base in self.card_art:
+            rb = by.get(int(base))
+            hp = by.get(rb[8]) if rb else None          # [8] HighRankFoilCardId
+            if not hp or hp[5] != 2 or hp[0] not in hpby:
+                continue
+            for cid in {rb[6], rb[7]}:                  # [6] NormalCardId [7] FoilCardId
+                r = by.get(cid)
+                if not r:
+                    continue
+                if (r[2], r[5]) != (hp[2], 2):          # [2] CardResourceId [5] FoilType
+                    r[2], r[5] = hp[2], 2
+                    n += 1
+                if cid not in hpby:
+                    nr = list(hpby[hp[0]])
+                    nr[0] = cid
+                    hpby[cid] = nr
+                    n += 1
+                if mpby.get(cid, [cid, None])[1] != hp[0]:
+                    mpby[cid] = [cid, hp[0]]
+                    n += 1
+        if n:
+            mm.set_table('CardMaster', cmt, high=True)
+            mm.set_table('HighPremiumCard', sorted(hpby.values(), key=lambda r: r[0]), high=True)
+            mm.set_table('StarterCardIdMapper', sorted(mpby.values(), key=lambda r: r[0]), high=True)
+        return n
 
     def _deps(self):
         """{资源名: {它依赖的资源名}}（只读 meta 的 r 表；和 _rows 一样按 meta 文件缓存）。"""
@@ -1380,8 +1478,12 @@ class SkinSwapper:
         have = sorted(swap_list(self.state.get('applied', [])), key=repr)
         if want != have:
             return True, '替换方案有变化'
+        if sorted(map(int, self.card_art)) != sorted(map(int, self.state.get('card_art') or [])):
+            return True, '卡面异画设置有变化'
+        if self.card_art and any(st['state'] in ('orig', 'partial') for st in hotfix.status(self.data_dir)):
+            return True, '游戏更新了代码文件，卡面异画需要重新替换一次'
         if self.logic_stale():
-            return True, '工具更新了替换方式（进化动作特效/战斗边框/立绘位置），需要重新替换一次'
+            return True, '工具更新了替换方式（卡面画质/进化动作特效/战斗边框/立绘位置），需要重新替换一次'
         for h, rec in self.state.get('files', {}).items():
             p = self._path(h)
             try:

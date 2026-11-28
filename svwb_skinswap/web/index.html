@@ -175,6 +175,10 @@
           <div class="plan-list" id="planList"></div>
           <div class="plan-empty" id="planEmpty">还没有替换方案。选好两侧的皮肤后点「加入替换方案」。</div>
         </div>
+        <div class="cardart-bar" id="cardArtBar">
+          <div class="cardart-text"><b>卡面异画</b><span id="cardArtSum">把普通卡显示成带动画的高级异画</span></div>
+          <button class="btn btn-ghost btn-sm" id="btnCardArt" type="button">选择卡牌</button>
+        </div>
         <button class="btn btn-gold btn-lg" id="btnApply" type="button"><svg class="ico"><use href="#i-bolt"/></svg><span id="applyText">一键替换</span></button>
         <button class="btn btn-danger-ghost" id="btnRevert" type="button"><svg class="ico"><use href="#i-undo"/></svg>全部还原</button>
         <p class="fineprint">只在你的电脑上生效，对手看到的仍是你实际装备的皮肤。替换或还原前请先完全退出游戏。</p>
@@ -231,6 +235,24 @@
       <div class="dialog-actions">
         <button class="btn btn-ghost" id="confirmNo" type="button">取消</button>
         <button class="btn btn-danger" id="confirmYes" type="button">确定还原</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 卡面异画 ================= -->
+  <div class="overlay" id="cardOverlay" hidden>
+    <div class="dialog dialog-cards" role="dialog" aria-modal="true" aria-labelledby="cardTitle">
+      <h2 id="cardTitle">卡面换成动态异画</h2>
+      <p class="dialog-sub">勾选的卡，普通版和闪卡版都会显示成它的高级异画（带动画和专属登场特效）。只改你电脑上的显示，卡牌本身和对手看到的都不变。为了让人物动画显示出来，会改一处游戏代码，「全部还原」时一起恢复。保存后点「一键替换」生效。</p>
+      <div class="card-tools">
+        <input id="cardSearch" type="text" placeholder="搜索卡名" spellcheck="false">
+        <span class="card-count" id="cardCount"></span>
+      </div>
+      <div class="card-list" id="cardList"><div class="detected-loading"><div class="spinner"></div>正在读取卡牌…</div></div>
+      <div class="dialog-actions">
+        <button class="btn btn-ghost" id="cardClear" type="button">全部取消</button>
+        <button class="btn btn-ghost" id="cardCancel" type="button">取消</button>
+        <button class="btn btn-violet" id="cardSave" type="button">保存</button>
       </div>
     </div>
   </div>
